@@ -2,12 +2,6 @@ name: Update native libraries
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
-    paths:
-      - 'beatd/**'
-      - 'Cargo.lock'
-      - '.github/workflows/update-native.yml'
 
 permissions:
   contents: read
