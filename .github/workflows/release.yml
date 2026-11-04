@@ -1,0 +1,205 @@
+name: Release
+
+# Requires NPM_TOKEN and NUGET_API_KEY repository secrets.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check package versions
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 .github/scripts/check_version.py "$TAG"
+
+  linux:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio and window dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev libx11-dev libxi-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        run: |
+          mkdir -p dist/beatd-linux-x86_64
+          cp target/release/beatd dist/beatd-linux-x86_64/
+          cp README.md icon.png dist/beatd-linux-x86_64/
+          tar -czf dist/beatd-linux-x86_64.tar.gz -C dist beatd-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-linux-x86_64
+          path: dist/beatd-linux-x86_64.tar.gz
+
+  windows:
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/beatd-windows-x86_64 | Out-Null
+          Copy-Item target/release/beatd.exe dist/beatd-windows-x86_64/
+          Copy-Item README.md, icon.png dist/beatd-windows-x86_64/
+          Compress-Archive -Path dist/beatd-windows-x86_64/* -DestinationPath dist/beatd-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-windows-x86_64
+          path: dist/beatd-windows-x86_64.zip
+
+  macos:
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --package beatd_gui --target aarch64-apple-darwin
+      - run: cargo build --release --locked --package beatd_gui --target x86_64-apple-darwin
+      - name: Package
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' beatd_gui/Cargo.toml | head -n1)
+          mkdir -p icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z "$size" "$size" icon.png --out "icon.iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z "$((size * 2))" "$((size * 2))" icon.png --out "icon.iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns icon.iconset -o icon.icns
+
+          APP=dist/beatd.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create \
+            -output "$APP/Contents/MacOS/beatd" \
+            target/aarch64-apple-darwin/release/beatd \
+            target/x86_64-apple-darwin/release/beatd
+          cp icon.icns "$APP/Contents/Resources/icon.icns"
+          sed "s/__VERSION__/${VERSION}/g" .github/macos/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" dist/beatd-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-macos-universal
+          path: dist/beatd-macos-universal.zip
+
+  native:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rid: linux-x64
+            file: libbeatd.so
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rid: win-x64
+            file: beatd.dll
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            rid: osx-arm64
+            file: libbeatd.dylib
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            rid: osx-x64
+            file: libbeatd.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p beatd --release --locked --features ffi --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: target/${{ matrix.target }}/release/${{ matrix.file }}
+          if-no-files-found: error
+
+  publish-npm:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+        working-directory: beatd-js
+      - run: bun run build
+        working-directory: beatd-js
+      - name: Publish
+        run: |
+          # npm excludes symlinks from tarballs, so dereference them in a staging copy.
+          rm -rf "$RUNNER_TEMP/beatd-npm"
+          cp -RL beatd-js "$RUNNER_TEMP/beatd-npm"
+          cd "$RUNNER_TEMP/beatd-npm"
+          npm publish --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-nuget:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
+      - name: Place native libraries
+        run: |
+          for rid in linux-x64 win-x64 osx-arm64 osx-x64; do
+            mkdir -p "beatd-dotnet/Beatd/runtimes/$rid/native"
+            cp native-artifacts/"native-$rid"/* "beatd-dotnet/Beatd/runtimes/$rid/native/"
+          done
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: Pack
+        run: dotnet pack beatd-dotnet/Beatd/Beatd.csproj -c Release -o dist -p:PackageVersion="${GITHUB_REF_NAME#v}"
+      - name: Push
+        run: dotnet nuget push "dist/Beatd.${GITHUB_REF_NAME#v}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, macos, publish-npm, publish-nuget]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

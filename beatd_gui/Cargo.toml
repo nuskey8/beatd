@@ -1,0 +1,20 @@
+[package]
+name = "beatd_gui"
+edition = "2024"
+publish = false
+version.workspace = true
+
+[[bin]]
+name = "beatd"
+path = "src/main.rs"
+
+[dependencies]
+beatd = { path = "../beatd" }
+cpal = "0.15"
+eframe = "0.31"
+rosc = "0.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[build-dependencies]
+winres = "0.1"

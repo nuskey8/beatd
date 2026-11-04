@@ -1,0 +1,5 @@
+{
+  "name": "Beatd.Unity",
+  "rootNamespace": "Beatd",
+  "allowUnsafeCode": true
+}

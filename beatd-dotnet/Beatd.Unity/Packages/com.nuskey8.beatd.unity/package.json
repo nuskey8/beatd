@@ -1,0 +1,24 @@
+{
+  "name": "com.nuskey8.beatd.unity",
+  "version": "0.0.1",
+  "displayName": "Beatd",
+  "description": "beatd(a cross-platform audio analysis library) binding for Unity",
+  "unity": "6000.0",
+  "license": "MIT",
+  "author": {
+    "name": "nuskey"
+  },
+  "keywords": [
+    "audio",
+    "bpm",
+    "beat",
+    "analysis"
+  ],
+  "documentationUrl": "https://github.com/nuskey8/beatd/blob/main/README.md",
+  "licensesUrl": "https://github.com/nuskey8/beatd/blob/main/LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nuskey8/beatd.git",
+    "directory": "beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity"
+  }
+}

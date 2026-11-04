@@ -1,0 +1,50 @@
+{
+  "name": "beatd",
+  "version": "0.0.1",
+  "description": "beatd bindings for JavaScript",
+  "license": "MIT",
+  "author": "nuskey",
+  "homepage": "https://github.com/nuskey8/beatd#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nuskey8/beatd.git",
+    "directory": "beatd-js"
+  },
+  "bugs": {
+    "url": "https://github.com/nuskey8/beatd/issues"
+  },
+  "keywords": [
+    "audio",
+    "bpm",
+    "beat",
+    "analysis",
+    "webassembly",
+    "wasm"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "wasm-pack build ../beatd --target web --out-dir ../beatd-js/dist/wasm -- --features wasm && rm -f dist/wasm/.gitignore && tsc",
+    "test": "bun test",
+    "prepack": "bun run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.0.0"
+  }
+}

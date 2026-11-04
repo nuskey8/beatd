@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    
+    <!-- NuGet Packaging -->
+    <PackageVersion>0.0.1</PackageVersion>
+    <Authors>nuskey</Authors>
+    <Copyright>© Yusuke Nakada</Copyright>
+    <PackageProjectUrl>https://github.com/nuskey8/beatd</PackageProjectUrl>
+    <RepositoryUrl>$(PackageProjectUrl)</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <IsPackable>false</IsPackable>
+    <PackageTags>audio;bpm;beat;fft</PackageTags>
+  </PropertyGroup>
+</Project>

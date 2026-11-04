@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Beatd.Tests/Beatd.Tests.csproj" />
+  <Project Path="Beatd/Beatd.csproj" />
+</Solution>

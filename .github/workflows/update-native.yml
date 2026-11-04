@@ -1,0 +1,80 @@
+name: Update native libraries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'beatd/**'
+      - 'Cargo.lock'
+      - '.github/workflows/update-native.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rid: linux-x64
+            file: libbeatd.so
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rid: win-x64
+            file: beatd.dll
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            rid: osx-arm64
+            file: libbeatd.dylib
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            rid: osx-x64
+            file: libbeatd.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build -p beatd --release --locked --features ffi --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.rid }}
+          path: target/${{ matrix.target }}/release/${{ matrix.file }}
+          if-no-files-found: error
+
+  update:
+    needs: build
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
+      - name: Place native libraries
+        shell: bash
+        run: |
+          for rid in linux-x64 win-x64 osx-arm64 osx-x64; do
+            mkdir -p "beatd-dotnet/Beatd/runtimes/$rid/native"
+            cp native-artifacts/"$rid"/* "beatd-dotnet/Beatd/runtimes/$rid/native/"
+          done
+          mkdir -p beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity/Plugins
+          cp native-artifacts/linux-x64/libbeatd.so beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity/Plugins/
+          cp native-artifacts/win-x64/beatd.dll beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity/Plugins/
+          lipo -create native-artifacts/osx-arm64/libbeatd.dylib native-artifacts/osx-x64/libbeatd.dylib -output beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity/Plugins/libbeatd.dylib
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/update-native-libraries
+          title: Update native libraries
+          commit-message: Update native libraries
+          body: Update the native libraries used by the .NET and Unity packages.
+          add-paths: |
+            beatd-dotnet/Beatd/runtimes/**
+            beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity/Plugins/**

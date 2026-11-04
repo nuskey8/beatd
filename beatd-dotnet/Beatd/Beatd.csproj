@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net11.0;net10.0;netstandard2.1</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>9.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <IsPackable>true</IsPackable>
+    <PackageId>Beatd</PackageId>
+    <Description>beatd(a cross-platform audio analysis library) binding for .NET</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Beatd.Unity/Packages/com.nuskey8.beatd.unity/Runtime/*.cs" Link="%(Filename)%(Extension)" />
+    <None Include="runtimes/**/*" Pack="true" PackagePath="%(Identity)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../README.md" Pack="true" PackagePath="\" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="\" />
+    <None Include="../../icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>
