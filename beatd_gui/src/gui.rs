@@ -1312,14 +1312,6 @@ impl eframe::App for Beatd {
                                                 palette.widget_bg;
                                             ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
                                                 palette.widget_bg;
-                                            field_label(ui, "Mode");
-                                            mode_combo(
-                                                ui,
-                                                ("mode", i),
-                                                &mut band.mode,
-                                                input_width,
-                                            );
-                                            ui.end_row();
                                             field_label(ui, "Low");
                                             ui.add_sized(
                                                 [input_width, ui.spacing().interact_size.y],
@@ -1375,6 +1367,14 @@ impl eframe::App for Beatd {
                                             ui.allocate_space(egui::vec2(1.0, 4.0));
                                             ui.end_row();
                                             field_label(ui, "Output");
+                                            ui.end_row();
+                                            field_label(ui, "Mode");
+                                            mode_combo(
+                                                ui,
+                                                ("mode", i),
+                                                &mut band.mode,
+                                                input_width,
+                                            );
                                             ui.end_row();
                                             field_label(ui, "OSC");
                                             let previous = band.address.clone();
@@ -1517,14 +1517,6 @@ impl eframe::App for Beatd {
                                                 palette.widget_bg;
                                             ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
                                                 palette.widget_bg;
-                                            field_label(ui, "Mode");
-                                            mode_combo(
-                                                ui,
-                                                "mode_level",
-                                                &mut self.level_channel.mode,
-                                                input_width,
-                                            );
-                                            ui.end_row();
                                             field_label(ui, "On delay");
                                             ui.add_sized(
                                                 [input_width, ui.spacing().interact_size.y],
@@ -1566,6 +1558,14 @@ impl eframe::App for Beatd {
                                             ui.allocate_space(egui::vec2(1.0, 4.0));
                                             ui.end_row();
                                             field_label(ui, "Output");
+                                            ui.end_row();
+                                            field_label(ui, "Mode");
+                                            mode_combo(
+                                                ui,
+                                                "mode_level",
+                                                &mut self.level_channel.mode,
+                                                input_width,
+                                            );
                                             ui.end_row();
                                             field_label(ui, "OSC");
                                             let previous = self.level_channel.address.clone();
