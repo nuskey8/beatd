@@ -40,3 +40,15 @@ fn spectrum_gain_and_compression_lift_quiet_bins() {
     assert!(gained > base * 1.5);
     assert!(compressed > gained);
 }
+
+#[test]
+fn fft_input_reuse_does_not_keep_previous_frame() {
+    let mut analyzer = Analyzer::new(48000);
+    analyzer.set_bpm_enabled(false);
+    analyzer.push(&vec![0.5; FFT_SIZE]);
+    analyzer.push(&vec![0.0; FFT_SIZE - 1]);
+    assert!(!analyzer.spectrum().iter().all(|&v| v == 0.0));
+    assert!(analyzer.push(&[f32::NAN]));
+    assert_eq!(analyzer.level(), 0.0);
+    assert!(analyzer.spectrum().iter().all(|&v| v == 0.0));
+}

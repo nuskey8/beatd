@@ -330,6 +330,7 @@ impl Band {
         }
     }
 }
+
 struct Beatd {
     devices: Vec<cpal::Device>,
     device_names: Vec<String>,
@@ -359,6 +360,7 @@ struct Beatd {
     show_bands: bool,
     show_channel: [bool; 5],
 }
+
 impl Default for Beatd {
     fn default() -> Self {
         let mut app = Self {
@@ -410,6 +412,7 @@ impl Default for Beatd {
         app
     }
 }
+
 fn push_samples<T: cpal::Sample>(data: &[T], channels: usize, tx: &SyncSender<f32>)
 where
     f32: cpal::FromSample<T>,
@@ -421,6 +424,7 @@ where
         }
     }
 }
+
 impl Beatd {
     fn save_settings(&mut self, slot: usize) {
         let path = preset_path(slot);
@@ -457,6 +461,7 @@ impl Beatd {
             });
         self.status = result.map_or_else(|e| e, |_| format!("Saved preset {slot}"));
     }
+
     fn load_settings(&mut self, slot: usize) {
         let result = std::fs::read(preset_path(slot))
             .map_err(|e| e.to_string())
@@ -470,6 +475,7 @@ impl Beatd {
             Err(e) => self.status = e,
         }
     }
+
     fn apply_preset(&mut self, preset: Preset) {
         self.release_notes();
         self.bands = preset.bands;
@@ -517,6 +523,7 @@ impl Beatd {
             }
         }
     }
+
     fn reset_settings(&mut self) {
         self.release_notes();
         self.bands = std::array::from_fn(Band::new);
@@ -538,6 +545,7 @@ impl Beatd {
         self.analyzer.set_bpm_enabled(true);
         self.status = "Reset settings".into();
     }
+
     fn refresh_devices(&mut self) {
         match cpal::default_host().input_devices() {
             Ok(devices) => {
@@ -552,6 +560,7 @@ impl Beatd {
             Err(e) => self.status = format!("Audio devices: {e}"),
         }
     }
+
     fn start(&mut self) -> Result<(), String> {
         let device = self
             .devices
@@ -637,6 +646,7 @@ impl Beatd {
         self.stream = Some(stream);
         Ok(())
     }
+
     fn release_notes(&mut self) {
         for band in self
             .bands
@@ -663,6 +673,7 @@ impl Beatd {
             band.trigger.reset();
         }
     }
+
     fn trigger_bpm_beat(&mut self) {
         if self.osc_enabled && !self.bpm_address.trim().is_empty() {
             let packet = OscPacket::Message(OscMessage {
@@ -676,6 +687,7 @@ impl Beatd {
             }
         }
     }
+
     fn send_osc_float(&mut self, address: &str, value: f32) {
         if !self.osc_enabled || address.trim().is_empty() {
             return;
@@ -690,6 +702,7 @@ impl Beatd {
             }
         }
     }
+
     fn send_osc_blob(&mut self, address: &str, data: Vec<u8>) {
         let packet = OscPacket::Message(OscMessage {
             addr: address.to_owned(),
@@ -701,6 +714,7 @@ impl Beatd {
             }
         }
     }
+
     fn send_waveform(&mut self) {
         if !self.osc_enabled || self.waveform_address.trim().is_empty() {
             return;
@@ -732,14 +746,27 @@ impl Beatd {
         let address = self.spectrum_address.clone();
         self.send_osc_blob(&address, data);
     }
+
     fn analyze(&mut self) {
         let Some(rx) = &self.rx else {
             return;
         };
-        let samples: Vec<f32> = rx.try_iter().collect();
         self.analyzer.set_spectrum_gain(self.gain);
         self.analyzer.set_spectrum_compression(self.compressor);
-        let updated = self.analyzer.push(&samples);
+        let mut updated = false;
+        let mut samples = [0.0; 256];
+        loop {
+            let mut count = 0;
+            for slot in &mut samples {
+                let Ok(sample) = rx.try_recv() else { break };
+                *slot = sample;
+                count += 1;
+            }
+            updated |= self.analyzer.push(&samples[..count]);
+            if count < samples.len() {
+                break;
+            }
+        }
         self.send_waveform();
         if self.bpm_detect
             && self

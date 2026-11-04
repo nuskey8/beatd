@@ -1,6 +1,8 @@
-use rustfft::{Fft, FftPlanner, num_complex::Complex};
+use crate::analyzer::{FFT_SIZE, fft_plan, hann_window};
+use rustfft::{Fft, num_complex::Complex};
 use std::{collections::VecDeque, sync::Arc};
-const N: usize = 2048;
+
+const N: usize = FFT_SIZE;
 const HOP: usize = 256;
 
 // Spectral-flux history follows Sound2Light's 2048/256 analysis geometry.
@@ -10,6 +12,8 @@ pub struct BpmDetector {
     previous: Vec<f32>,
     flux: VecDeque<f32>,
     fft: Arc<dyn Fft<f32>>,
+    buffer: Vec<Complex<f32>>,
+    scratch: Vec<Complex<f32>>,
     frames: usize,
     candidates: VecDeque<f32>,
     pub min_bpm: f32,
@@ -17,46 +21,49 @@ pub struct BpmDetector {
 
 impl Default for BpmDetector {
     fn default() -> Self {
+        let fft = fft_plan();
+        let scratch = vec![Complex::default(); fft.get_inplace_scratch_len()];
         Self {
             samples: VecDeque::with_capacity(N),
             previous: vec![0.0; N / 2],
             flux: VecDeque::new(),
-            fft: FftPlanner::new().plan_fft_forward(N),
+            fft,
+            scratch,
+            buffer: vec![Complex::default(); N],
             frames: 0,
             candidates: VecDeque::new(),
             min_bpm: 75.0,
         }
     }
 }
+
 impl BpmDetector {
     pub fn beat_offsets(&self, bpm: f32, rate: f32) -> Vec<f32> {
         if !bpm.is_finite() || bpm <= 0.0 || self.flux.len() < 4 {
             return Vec::new();
         }
         let period = 60.0 * rate / (bpm * HOP as f32);
-        let flux: Vec<_> = self.flux.iter().copied().collect();
+        let flux = &self.flux;
         let phases = (period.round() as usize).min(flux.len());
         if !period.is_finite() || phases == 0 {
             return Vec::new();
         }
         let phase = (0..phases)
-            .max_by(|a, b| {
-                let score = |phase: usize| -> f32 {
-                    let mut sum = 0.0;
-                    let mut pos = phase as f32;
-                    while (pos as usize) < flux.len() {
-                        let i = pos.round() as usize;
-                        if i >= flux.len() {
-                            break;
-                        }
-                        sum += flux[i];
-                        pos += period;
+            .map(|phase| {
+                let mut sum = 0.0;
+                let mut pos = phase as f32;
+                while (pos as usize) < flux.len() {
+                    let i = pos.round() as usize;
+                    if i >= flux.len() {
+                        break;
                     }
-                    sum
-                };
-                score(*a).total_cmp(&score(*b))
+                    sum += flux[i];
+                    pos += period;
+                }
+                (phase, sum)
             })
-            .unwrap_or(0);
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(0, |(phase, _)| phase);
         let mut result = Vec::new();
         let mut pos = phase as f32;
         while pos < flux.len() as f32 {
@@ -72,20 +79,15 @@ impl BpmDetector {
         if self.samples.len() < N {
             return None;
         }
-        let mut buffer: Vec<_> = self
-            .samples
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                Complex::new(
-                    s * (0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (N - 1) as f32).cos()),
-                    0.0,
-                )
-            })
-            .collect();
-        self.fft.process(&mut buffer);
+        for ((value, sample), window) in
+            self.buffer.iter_mut().zip(&self.samples).zip(hann_window())
+        {
+            *value = Complex::new(sample * window, 0.0);
+        }
+        self.fft
+            .process_with_scratch(&mut self.buffer, &mut self.scratch);
         let mut flux = 0.0;
-        for (bin, previous) in buffer.iter().zip(&mut self.previous) {
+        for (bin, previous) in self.buffer.iter().zip(&mut self.previous) {
             let magnitude = bin.norm();
             flux += (magnitude - *previous).max(0.0);
             *previous = magnitude;
@@ -170,20 +172,25 @@ impl BpmDetector {
         let mut sorted: Vec<_> = self.candidates.iter().copied().collect();
         sorted.sort_by(f32::total_cmp);
         let median = sorted[sorted.len() / 2];
-        let cluster: Vec<_> = sorted
-            .into_iter()
-            .filter(|v| (v - median).abs() < 2.0)
-            .collect();
-        if cluster.len() * 4 < self.candidates.len() * 3 {
+        let mut count = 0;
+        let mut sum = 0.0;
+        for value in sorted {
+            if (value - median).abs() < 2.0 {
+                count += 1;
+                sum += value;
+            }
+        }
+        if count * 4 < self.candidates.len() * 3 {
             return None;
         }
-        Some(cluster.iter().sum::<f32>() / cluster.len() as f32)
+        Some(sum / count as f32)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn tracks_beats_over_continuous_tone_and_subdivisions() {
         for rate in [44100, 48000] {
@@ -210,6 +217,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn beat_offsets_handles_extreme_bpm() {
         let mut detector = BpmDetector::default();
@@ -220,6 +228,38 @@ mod tests {
             assert!(detector.beat_offsets(bpm, 48_000.0).len() <= detector.flux.len());
         }
     }
+
+    #[test]
+    fn reused_fft_matches_reference_across_hops() {
+        let mut detector = BpmDetector::default();
+        let audio: Vec<_> = (0..N + HOP * 2).map(|i| (i as f32 * 0.057).sin()).collect();
+        for (i, &sample) in audio.iter().enumerate() {
+            detector.push(sample, 48000.0);
+            if i + 1 >= N && (i + 1 - N) % HOP == 0 {
+                let mut reference: Vec<_> = audio[i + 1 - N..=i]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, s)| {
+                        Complex::new(
+                            s * (0.5
+                                - 0.5 * (std::f32::consts::TAU * j as f32 / (N - 1) as f32).cos()),
+                            0.0,
+                        )
+                    })
+                    .collect();
+                detector.fft.process(&mut reference);
+                assert_eq!(detector.buffer, reference);
+            }
+        }
+    }
+
+    #[test]
+    fn beat_offsets_preserves_latest_tied_phase() {
+        let mut detector = BpmDetector::default();
+        detector.flux = [1.0; 8].into_iter().collect();
+        assert_eq!(detector.beat_offsets(60.0, 1024.0), vec![2.0, 1.0]);
+    }
+
     #[test]
     fn silence_has_no_bpm() {
         let mut detector = BpmDetector::default();
@@ -227,6 +267,7 @@ mod tests {
             assert!(detector.push(0.0, 44100.0).unwrap_or(0.0) == 0.0);
         }
     }
+
     #[test]
     fn auto_range_covers_wide_bpm() {
         let rate = 44100;
