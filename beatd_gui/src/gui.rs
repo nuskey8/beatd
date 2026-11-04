@@ -16,6 +16,97 @@ const BANDS: [(f32, f32); 4] = [
     (2000.0, 10000.0),
 ];
 
+#[derive(Clone, Copy)]
+struct Palette {
+    dark: bool,
+    wave_bg: egui::Color32,
+    wave_center: egui::Color32,
+    wave: egui::Color32,
+    beat: egui::Color32,
+    spectrum: egui::Color32,
+    meter_bg: egui::Color32,
+    threshold_active: egui::Color32,
+    threshold_inactive: egui::Color32,
+    bands: [egui::Color32; 4],
+    level: egui::Color32,
+    frame: egui::Color32,
+    dot_inactive: egui::Color32,
+    widget_bg: egui::Color32,
+}
+
+impl Palette {
+    fn new(dark: bool) -> Self {
+        if dark {
+            Self {
+                dark,
+                wave_bg: egui::Color32::from_gray(25),
+                wave_center: egui::Color32::from_gray(80),
+                wave: egui::Color32::from_rgb(80, 235, 155),
+                beat: egui::Color32::WHITE,
+                spectrum: egui::Color32::LIGHT_GREEN,
+                meter_bg: egui::Color32::from_gray(30),
+                threshold_active: egui::Color32::WHITE,
+                threshold_inactive: egui::Color32::from_gray(150),
+                bands: [
+                    egui::Color32::from_rgb(163, 83, 109),
+                    egui::Color32::from_rgb(225, 196, 83),
+                    egui::Color32::from_rgb(80, 210, 111),
+                    egui::Color32::from_rgb(117, 126, 240),
+                ],
+                level: egui::Color32::LIGHT_BLUE,
+                frame: egui::Color32::from_gray(35),
+                dot_inactive: egui::Color32::BLACK,
+                widget_bg: egui::Color32::BLACK,
+            }
+        } else {
+            Self {
+                dark,
+                wave_bg: egui::Color32::from_gray(238),
+                wave_center: egui::Color32::from_gray(160),
+                wave: egui::Color32::from_rgb(0, 130, 80),
+                beat: egui::Color32::from_gray(50),
+                spectrum: egui::Color32::from_rgb(20, 120, 65),
+                meter_bg: egui::Color32::from_gray(225),
+                threshold_active: egui::Color32::from_gray(30),
+                threshold_inactive: egui::Color32::from_gray(120),
+                bands: [
+                    egui::Color32::from_rgb(150, 55, 85),
+                    egui::Color32::from_rgb(150, 120, 0),
+                    egui::Color32::from_rgb(20, 125, 65),
+                    egui::Color32::from_rgb(70, 80, 190),
+                ],
+                level: egui::Color32::from_rgb(20, 95, 160),
+                frame: egui::Color32::from_gray(242),
+                dot_inactive: egui::Color32::from_gray(190),
+                widget_bg: egui::Color32::WHITE,
+            }
+        }
+    }
+
+    fn band_fill(&self, i: usize, active: bool) -> egui::Color32 {
+        let color = self.bands[i];
+        if self.dark {
+            color.gamma_multiply(if active { 0.65 } else { 0.4 })
+        } else {
+            egui::Color32::from_rgba_unmultiplied(
+                color.r(),
+                color.g(),
+                color.b(),
+                if active { 48 } else { 28 },
+            )
+        }
+    }
+
+    fn band_frame(&self, i: usize) -> egui::Color32 {
+        let color = self.bands[i];
+        if self.dark {
+            color.gamma_multiply(0.18)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22)
+        }
+    }
+}
+
 fn preset_dir() -> std::path::PathBuf {
     let home = if cfg!(windows) {
         std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
@@ -446,6 +537,7 @@ impl Drop for Beatd {
 impl eframe::App for Beatd {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.analyze();
+        let palette = Palette::new(ctx.style().visuals.dark_mode);
         ctx.request_repaint_after(Duration::from_millis(25));
         egui::SidePanel::left("transport")
             .default_width(300.0)
@@ -469,7 +561,7 @@ impl eframe::App for Beatd {
                         egui::Shape::rect_filled(
                             bpm_button.rect,
                             0.0,
-                            egui::Color32::from_gray(65),
+                            ui.visuals().widgets.hovered.weak_bg_fill,
                         ),
                     );
                 }
@@ -708,14 +800,13 @@ impl eframe::App for Beatd {
                     egui::vec2(ui.available_width(), 80.0),
                     egui::Sense::hover(),
                 );
-                ui.painter()
-                    .rect_filled(wave_rect, 0.0, egui::Color32::from_gray(25));
+                ui.painter().rect_filled(wave_rect, 0.0, palette.wave_bg);
                 ui.painter().line_segment(
                     [
                         egui::pos2(wave_rect.left(), wave_rect.center().y),
                         egui::pos2(wave_rect.right(), wave_rect.center().y),
                     ],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(80)),
+                    egui::Stroke::new(1.0_f32, palette.wave_center),
                 );
                 let width = wave_rect.width() / 250.0;
                 for (i, peak) in self.analyzer.waveform().iter().rev().enumerate() {
@@ -726,7 +817,7 @@ impl eframe::App for Beatd {
                             egui::pos2(x, wave_rect.center().y - h),
                             egui::pos2(x, wave_rect.center().y + h),
                         ],
-                        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(80, 235, 155)),
+                        egui::Stroke::new(2.0_f32, palette.wave),
                     );
                 }
                 for age in self.analyzer.beat_offsets(self.bpm) {
@@ -737,7 +828,7 @@ impl eframe::App for Beatd {
                                 egui::pos2(x, wave_rect.top()),
                                 egui::pos2(x, wave_rect.bottom()),
                             ],
-                            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+                            egui::Stroke::new(1.5_f32, palette.beat),
                         );
                     }
                 }
@@ -765,14 +856,8 @@ impl eframe::App for Beatd {
                     .collect();
                 ui.painter().add(egui::Shape::line(
                     points,
-                    egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_GREEN),
+                    egui::Stroke::new(1.5_f32, palette.spectrum),
                 ));
-                let band_colors = [
-                    egui::Color32::from_rgb(163, 83, 109),
-                    egui::Color32::from_rgb(225, 196, 83),
-                    egui::Color32::from_rgb(80, 210, 111),
-                    egui::Color32::from_rgb(117, 126, 240),
-                ];
                 let rate = self.analyzer.sample_rate() as f32;
                 let to_x = |hz: f32| {
                     rect.left()
@@ -790,19 +875,16 @@ impl eframe::App for Beatd {
                         egui::pos2(left, top),
                         egui::pos2(right.max(left + 14.0), rect.bottom()),
                     );
-                    ui.painter().rect_filled(
-                        bar,
-                        2.0,
-                        band_colors[i].gamma_multiply(if band.active { 0.65 } else { 0.4 }),
-                    );
+                    ui.painter()
+                        .rect_filled(bar, 2.0, palette.band_fill(i, band.active));
                     ui.painter().line_segment(
                         [bar.left_top(), bar.right_top()],
                         egui::Stroke::new(
                             2.0_f32,
                             if band.active {
-                                egui::Color32::WHITE
+                                palette.threshold_active
                             } else {
-                                egui::Color32::from_gray(150)
+                                palette.threshold_inactive
                             },
                         ),
                     );
@@ -906,21 +988,16 @@ impl eframe::App for Beatd {
                         egui::Align2::CENTER_TOP,
                         label,
                         egui::FontId::proportional(11.0),
-                        egui::Color32::GRAY,
+                        ui.visuals().weak_text_color(),
                     );
                 }
                 ui.separator();
-                let colors = [
-                    egui::Color32::from_rgb(163, 83, 109),
-                    egui::Color32::from_rgb(225, 196, 83),
-                    egui::Color32::from_rgb(80, 210, 111),
-                    egui::Color32::from_rgb(117, 126, 240),
-                ];
+                let colors = palette.bands;
                 ui.columns(5, |columns| {
                     for (i, (ui, band)) in columns.iter_mut().zip(self.bands.iter_mut()).enumerate()
                     {
                         egui::Frame::new()
-                            .fill(colors[i].gamma_multiply(0.18))
+                            .fill(palette.band_frame(i))
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
@@ -944,7 +1021,7 @@ impl eframe::App for Beatd {
                                                 if band.active {
                                                     colors[i]
                                                 } else {
-                                                    egui::Color32::BLACK
+                                                    palette.dot_inactive
                                                 },
                                             );
                                         },
@@ -956,11 +1033,7 @@ impl eframe::App for Beatd {
                                         egui::vec2(24.0, 160.0),
                                         egui::Sense::hover(),
                                     );
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        3.0,
-                                        egui::Color32::from_gray(30),
-                                    );
+                                    ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
                                     let fill = egui::Rect::from_min_max(
                                         egui::pos2(
                                             rect.left(),
@@ -991,9 +1064,9 @@ impl eframe::App for Beatd {
                                         egui::Stroke::new(
                                             2.0_f32,
                                             if band.active {
-                                                egui::Color32::WHITE
+                                                palette.threshold_active
                                             } else {
-                                                egui::Color32::from_gray(150)
+                                                palette.threshold_inactive
                                             },
                                         ),
                                     );
@@ -1016,41 +1089,38 @@ impl eframe::App for Beatd {
                                     }
                                 });
                                 ui.add_space(10.0);
-                                ui.label(
-                                    egui::RichText::new("Frequency range (Hz)")
-                                        .color(egui::Color32::WHITE),
-                                );
+                                ui.label("Frequency range (Hz)");
                                 let input_width = (ui.available_width() - 80.0).max(40.0);
                                 egui::Grid::new(("settings", i))
                                     .min_col_width(72.0)
                                     .num_columns(2)
                                     .show(ui, |ui| {
-                                        ui.visuals_mut().extreme_bg_color = egui::Color32::BLACK;
+                                        ui.visuals_mut().extreme_bg_color = palette.widget_bg;
                                         ui.visuals_mut().widgets.inactive.bg_fill =
-                                            egui::Color32::BLACK;
+                                            palette.widget_bg;
                                         ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                            egui::Color32::BLACK;
+                                            palette.widget_bg;
                                         ui.visuals_mut().widgets.hovered.weak_bg_fill =
-                                            egui::Color32::BLACK;
+                                            palette.widget_bg;
                                         ui.visuals_mut().widgets.active.weak_bg_fill =
-                                            egui::Color32::BLACK;
+                                            palette.widget_bg;
                                         ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
-                                            egui::Color32::BLACK;
-                                        ui.colored_label(egui::Color32::WHITE, "Low");
+                                            palette.widget_bg;
+                                        ui.label("Low");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.low)
                                                 .range(0.0..=20000.0),
                                         );
                                         ui.end_row();
-                                        ui.colored_label(egui::Color32::WHITE, "High");
+                                        ui.label("High");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.high)
                                                 .range(band.low + 1.0..=24000.0),
                                         );
                                         ui.end_row();
-                                        ui.colored_label(egui::Color32::WHITE, "Gain");
+                                        ui.label("Gain");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.gain)
@@ -1060,12 +1130,9 @@ impl eframe::App for Beatd {
                                         ui.end_row();
                                         ui.allocate_space(egui::vec2(1.0, 4.0));
                                         ui.end_row();
-                                        ui.label(
-                                            egui::RichText::new("Output")
-                                                .color(egui::Color32::WHITE),
-                                        );
+                                        ui.label("Output");
                                         ui.end_row();
-                                        ui.colored_label(egui::Color32::WHITE, "OSC");
+                                        ui.label("OSC");
                                         let previous = band.address.clone();
                                         if ui
                                             .add(
@@ -1099,14 +1166,12 @@ impl eframe::App for Beatd {
                             });
                     }
                     egui::Frame::new()
-                        .fill(egui::Color32::from_gray(35))
+                        .fill(palette.frame)
                         .inner_margin(10.0)
                         .show(&mut columns[4], |ui| {
                             ui.horizontal(|ui| {
                                 ui.heading(
-                                    egui::RichText::new("Level")
-                                        .color(egui::Color32::LIGHT_BLUE)
-                                        .strong(),
+                                    egui::RichText::new("Level").color(palette.level).strong(),
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1119,9 +1184,9 @@ impl eframe::App for Beatd {
                                             rect.center(),
                                             6.0,
                                             if self.level_channel.active {
-                                                egui::Color32::LIGHT_BLUE
+                                                palette.level
                                             } else {
-                                                egui::Color32::BLACK
+                                                palette.dot_inactive
                                             },
                                         );
                                     },
@@ -1130,8 +1195,7 @@ impl eframe::App for Beatd {
                             ui.add_space(12.0);
                             let (rect, _) = ui
                                 .allocate_exact_size(egui::vec2(24.0, 160.0), egui::Sense::hover());
-                            ui.painter()
-                                .rect_filled(rect, 3.0, egui::Color32::from_gray(30));
+                            ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
                             let height = ((20.0 * self.analyzer.level().max(0.00001).log10()
                                 + 100.0)
                                 / 100.0)
@@ -1140,8 +1204,7 @@ impl eframe::App for Beatd {
                                 egui::pos2(rect.left(), rect.bottom() - rect.height() * height),
                                 rect.right_bottom(),
                             );
-                            ui.painter()
-                                .rect_filled(fill, 3.0, egui::Color32::LIGHT_BLUE);
+                            ui.painter().rect_filled(fill, 3.0, palette.level);
                             let threshold = &mut self.level_channel.threshold;
                             let y = rect.bottom()
                                 - rect.height()
@@ -1155,9 +1218,9 @@ impl eframe::App for Beatd {
                                 egui::Stroke::new(
                                     2.0_f32,
                                     if self.level_channel.active {
-                                        egui::Color32::WHITE
+                                        palette.threshold_active
                                     } else {
-                                        egui::Color32::from_gray(150)
+                                        palette.threshold_inactive
                                     },
                                 ),
                             );
@@ -1182,23 +1245,22 @@ impl eframe::App for Beatd {
                                 .clamp(0.00001, 1.0);
                             }
                             ui.add_space(10.0);
-                            ui.label(egui::RichText::new(" ").color(egui::Color32::WHITE));
+                            ui.label(" ");
                             let input_width = (ui.available_width() - 80.0).max(40.0);
                             egui::Grid::new("level_settings")
                                 .min_col_width(72.0)
                                 .num_columns(2)
                                 .show(ui, |ui| {
-                                    ui.visuals_mut().extreme_bg_color = egui::Color32::BLACK;
-                                    ui.visuals_mut().widgets.inactive.bg_fill =
-                                        egui::Color32::BLACK;
+                                    ui.visuals_mut().extreme_bg_color = palette.widget_bg;
+                                    ui.visuals_mut().widgets.inactive.bg_fill = palette.widget_bg;
                                     ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                        egui::Color32::BLACK;
+                                        palette.widget_bg;
                                     ui.visuals_mut().widgets.hovered.weak_bg_fill =
-                                        egui::Color32::BLACK;
+                                        palette.widget_bg;
                                     ui.visuals_mut().widgets.active.weak_bg_fill =
-                                        egui::Color32::BLACK;
+                                        palette.widget_bg;
                                     ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
-                                        egui::Color32::BLACK;
+                                        palette.widget_bg;
                                     for _ in 0..3 {
                                         ui.label(" ");
                                         ui.allocate_space(egui::vec2(
@@ -1209,11 +1271,9 @@ impl eframe::App for Beatd {
                                     }
                                     ui.allocate_space(egui::vec2(1.0, 4.0));
                                     ui.end_row();
-                                    ui.label(
-                                        egui::RichText::new("Output").color(egui::Color32::WHITE),
-                                    );
+                                    ui.label("Output");
                                     ui.end_row();
-                                    ui.colored_label(egui::Color32::WHITE, "OSC");
+                                    ui.label("OSC");
                                     let previous = self.level_channel.address.clone();
                                     if ui
                                         .add(
