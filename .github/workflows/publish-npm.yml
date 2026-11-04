@@ -1,0 +1,52 @@
+name: Publish npm
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version
+        run: python3 .github/scripts/check_version.py "v${{ inputs.version }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+        working-directory: beatd-js
+      - run: bun run build
+        working-directory: beatd-js
+      - name: Publish
+        run: |
+          # npm excludes symlinks from tarballs, so dereference them in a staging copy.
+          rm -rf "$RUNNER_TEMP/beatd-npm"
+          cp -RL beatd-js "$RUNNER_TEMP/beatd-npm"
+          cd "$RUNNER_TEMP/beatd-npm"
+          npm publish --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

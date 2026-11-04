@@ -1,0 +1,32 @@
+name: Publish Cargo
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version
+        run: python3 .github/scripts/check_version.py "v${{ inputs.version }}"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish -p beatd --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,0 +1,94 @@
+name: Publish NuGet
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      NUGET_USER:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rid: linux-x64
+            file: libbeatd.so
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rid: win-x64
+            file: beatd.dll
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            rid: osx-arm64
+            file: libbeatd.dylib
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            rid: osx-x64
+            file: libbeatd.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p beatd --release --locked --features ffi --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: target/${{ matrix.target }}/release/${{ matrix.file }}
+          if-no-files-found: error
+
+  publish:
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version
+        run: python3 .github/scripts/check_version.py "v${{ inputs.version }}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
+      - name: Place native libraries
+        run: |
+          for rid in linux-x64 win-x64 osx-arm64 osx-x64; do
+            mkdir -p "beatd-dotnet/Beatd/runtimes/$rid/native"
+            cp native-artifacts/"native-$rid"/* "beatd-dotnet/Beatd/runtimes/$rid/native/"
+          done
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: Pack
+        env:
+          VERSION: ${{ inputs.version }}
+        run: dotnet pack beatd-dotnet/Beatd/Beatd.csproj -c Release -o dist -p:PackageVersion="$VERSION"
+      - name: NuGet login (OIDC -> temporary API key)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Push
+        env:
+          VERSION: ${{ inputs.version }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "dist/Beatd.$VERSION.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

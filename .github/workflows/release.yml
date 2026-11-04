@@ -1,6 +1,6 @@
 name: Release
 
-# Requires NPM_TOKEN and NUGET_API_KEY repository secrets.
+# Requires NPM_TOKEN, NUGET_USER and CARGO_REGISTRY_TOKEN repository secrets.
 on:
   push:
     tags: ["v*"]
@@ -12,12 +12,17 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Check package versions
+        id: check
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: python3 .github/scripts/check_version.py "$TAG"
+        run: |
+          python3 .github/scripts/check_version.py "$TAG"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
   linux:
     needs: verify
@@ -75,7 +80,7 @@ jobs:
       - run: cargo build --release --locked --package beatd_gui --target x86_64-apple-darwin
       - name: Package
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' beatd_gui/Cargo.toml | head -n1)
+          VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
           mkdir -p icon.iconset
           for size in 16 32 64 128 256 512; do
             sips -z "$size" "$size" icon.png --out "icon.iconset/icon_${size}x${size}.png" >/dev/null
@@ -98,101 +103,33 @@ jobs:
           name: beatd-macos-universal
           path: dist/beatd-macos-universal.zip
 
-  native:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            rid: linux-x64
-            file: libbeatd.so
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            rid: win-x64
-            file: beatd.dll
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            rid: osx-arm64
-            file: libbeatd.dylib
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            rid: osx-x64
-            file: libbeatd.dylib
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p beatd --release --locked --features ffi --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.rid }}
-          path: target/${{ matrix.target }}/release/${{ matrix.file }}
-          if-no-files-found: error
-
   publish-npm:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: latest
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-      - run: bun install --frozen-lockfile
-        working-directory: beatd-js
-      - run: bun run build
-        working-directory: beatd-js
-      - name: Publish
-        run: |
-          # npm excludes symlinks from tarballs, so dereference them in a staging copy.
-          rm -rf "$RUNNER_TEMP/beatd-npm"
-          cp -RL beatd-js "$RUNNER_TEMP/beatd-npm"
-          cd "$RUNNER_TEMP/beatd-npm"
-          npm publish --access public --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}
+    secrets: inherit
 
   publish-nuget:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [verify, native]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: native-artifacts
-      - name: Place native libraries
-        run: |
-          for rid in linux-x64 win-x64 osx-arm64 osx-x64; do
-            mkdir -p "beatd-dotnet/Beatd/runtimes/$rid/native"
-            cp native-artifacts/"native-$rid"/* "beatd-dotnet/Beatd/runtimes/$rid/native/"
-          done
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 11.0.x
-          dotnet-quality: preview
-      - name: Pack
-        run: dotnet pack beatd-dotnet/Beatd/Beatd.csproj -c Release -o dist -p:PackageVersion="${GITHUB_REF_NAME#v}"
-      - name: Push
-        run: dotnet nuget push "dist/Beatd.${GITHUB_REF_NAME#v}.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+    needs: verify
+    uses: ./.github/workflows/publish-nuget.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}
+    secrets: inherit
+
+  publish-cargo:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    uses: ./.github/workflows/publish-cargo.yml
+    with:
+      version: ${{ needs.verify.outputs.version }}
+    secrets: inherit
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows, macos, publish-npm, publish-nuget]
+    needs: [linux, windows, macos, publish-npm, publish-nuget, publish-cargo]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
