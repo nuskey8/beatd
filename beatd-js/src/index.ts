@@ -34,6 +34,7 @@ export class Analyzer {
   setSpectrumCompression(compression: number): void { this.inner.set_spectrum_compression(compression); }
   reset(): void { this.inner.reset(); }
   free(): void { this.inner.free(); }
+  [Symbol.dispose](): void { this.free(); }
 }
 
 export function createAnalyzer(options: AnalyzerOptions): Analyzer {

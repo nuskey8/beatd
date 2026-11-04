@@ -90,7 +90,7 @@ npm i beatd
 ```js
 import { createAnalyzer } from 'beatd';
 
-const analyzer = createAnalyzer({ sampleRate: 48000 });
+using analyzer = createAnalyzer({ sampleRate: 48000 });
 
 // samples: Float32Array
 analyzer.push(samples);
@@ -99,8 +99,6 @@ console.log(analyzer.level(), analyzer.bpm());
 console.log(analyzer.spectrum());
 console.log(analyzer.waveform());
 console.log(analyzer.beatOffsets(analyzer.bpm()));
-
-analyzer.free();
 ```
 
 ### C# / Unity

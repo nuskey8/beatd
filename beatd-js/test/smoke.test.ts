@@ -11,6 +11,21 @@ test('analyzes samples and resets', () => {
   analyzer.free();
 });
 
+test('disposes with using', () => {
+  let disposed = false;
+  const analyzer = createAnalyzer({ sampleRate: 48000 });
+  const free = analyzer.free.bind(analyzer);
+  analyzer.free = () => {
+    disposed = true;
+    free();
+  };
+  {
+    using disposable = analyzer;
+    expect(disposable.sampleRate()).toBe(48000);
+  }
+  expect(disposed).toBe(true);
+});
+
 test('settings, waveform and beat offsets', () => {
   const analyzer = createAnalyzer({ sampleRate: 48000 });
   expect(analyzer.sampleRate()).toBe(48000);
