@@ -107,6 +107,114 @@ impl Palette {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum TriggerMode {
+    #[default]
+    Trigger,
+    Level,
+}
+
+impl TriggerMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Trigger => "Trigger",
+            Self::Level => "Level",
+        }
+    }
+}
+
+fn mode_combo(ui: &mut egui::Ui, id: impl std::hash::Hash, mode: &mut TriggerMode, width: f32) {
+    egui::ComboBox::from_id_salt(id)
+        .width(width)
+        .selected_text(mode.label())
+        .show_ui(ui, |ui| {
+            ui.selectable_value(mode, TriggerMode::Trigger, "Trigger");
+            ui.selectable_value(mode, TriggerMode::Level, "Level");
+        });
+}
+
+fn field_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).strong());
+}
+
+#[derive(Clone, Copy)]
+struct Trigger {
+    above_since: Option<Instant>,
+    below_since: Option<Instant>,
+    last_on: Option<Instant>,
+    armed: bool,
+}
+
+impl Default for Trigger {
+    fn default() -> Self {
+        Self {
+            above_since: None,
+            below_since: None,
+            last_on: None,
+            armed: true,
+        }
+    }
+}
+
+impl Trigger {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn update(
+        &mut self,
+        active: bool,
+        above: bool,
+        now: Instant,
+        on_delay: f32,
+        off_delay: f32,
+        decay: f32,
+    ) -> (bool, Option<bool>) {
+        let mut active = active;
+        let mut event = None;
+        if above {
+            self.below_since = None;
+            if !active && self.armed {
+                let since = *self.above_since.get_or_insert(now);
+                if now.duration_since(since).as_secs_f32() >= on_delay {
+                    active = true;
+                    self.last_on = Some(now);
+                    self.above_since = None;
+                    event = Some(true);
+                }
+            }
+        } else {
+            self.above_since = None;
+            self.armed = true;
+            if active {
+                let since = *self.below_since.get_or_insert(now);
+                if now.duration_since(since).as_secs_f32() >= off_delay {
+                    active = false;
+                    self.last_on = None;
+                    self.below_since = None;
+                    event = Some(false);
+                }
+            } else {
+                self.below_since = None;
+            }
+        }
+        if active
+            && decay > 0.0
+            && self
+                .last_on
+                .is_some_and(|on| now.duration_since(on).as_secs_f32() >= decay)
+        {
+            active = false;
+            self.last_on = None;
+            self.armed = false;
+            self.above_since = None;
+            event = Some(false);
+        }
+        (active, event)
+    }
+}
+
 fn preset_dir() -> std::path::PathBuf {
     let home = if cfg!(windows) {
         std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
@@ -131,6 +239,16 @@ struct Band {
     level: f32,
     active: bool,
     address: String,
+    #[serde(default)]
+    mode: TriggerMode,
+    #[serde(default)]
+    on_delay: f32,
+    #[serde(default)]
+    off_delay: f32,
+    #[serde(default)]
+    decay: f32,
+    #[serde(skip)]
+    trigger: Trigger,
 }
 impl Band {
     fn new(i: usize) -> Self {
@@ -142,6 +260,11 @@ impl Band {
             level: 0.0,
             active: false,
             address: format!("/beatd/band/{}", i + 1),
+            mode: TriggerMode::Trigger,
+            on_delay: 0.0,
+            off_delay: 0.0,
+            decay: 0.0,
+            trigger: Trigger::default(),
         }
     }
 }
@@ -261,6 +384,9 @@ impl Beatd {
                         && b.high <= 24000.0
                         && (0.000001..=1.0).contains(&b.threshold)
                         && (0.1..=20.0).contains(&b.gain)
+                        && (0.0..=10.0).contains(&b.on_delay)
+                        && (0.0..=10.0).contains(&b.off_delay)
+                        && (0.0..=30.0).contains(&b.decay)
                         && b.address.starts_with('/')
                 }) =>
             {
@@ -268,10 +394,12 @@ impl Beatd {
                 for band in &mut bands {
                     band.active = false;
                     band.level = 0.0;
+                    band.trigger.reset();
                 }
                 self.bands = bands;
                 level.active = false;
                 level.level = 0.0;
+                level.trigger.reset();
                 self.level_channel = level;
                 self.status = format!("Loaded preset {slot}");
             }
@@ -401,6 +529,7 @@ impl Beatd {
                 }
                 band.active = false;
             }
+            band.trigger.reset();
         }
     }
     fn trigger_bpm_beat(&mut self) {
@@ -413,6 +542,20 @@ impl Beatd {
                 if let Err(e) = socket.send_to(&data, (self.destination.as_str(), self.osc_port)) {
                     self.status = format!("OSC: {e}");
                 }
+            }
+        }
+    }
+    fn send_osc_float(&mut self, address: &str, value: f32) {
+        if !self.osc_enabled || address.trim().is_empty() {
+            return;
+        }
+        let packet = OscPacket::Message(OscMessage {
+            addr: address.to_owned(),
+            args: vec![OscType::Float(value)],
+        });
+        if let (Some(socket), Ok(data)) = (&self.socket, rosc::encoder::encode(&packet)) {
+            if let Err(e) = socket.send_to(&data, (self.destination.as_str(), self.osc_port)) {
+                self.status = format!("OSC: {e}");
             }
         }
     }
@@ -491,6 +634,8 @@ impl Beatd {
             return;
         }
         self.send_spectrum();
+        let now = Instant::now();
+        let mut events = Vec::new();
         for (i, band) in self
             .bands
             .iter_mut()
@@ -503,29 +648,34 @@ impl Beatd {
                 self.analyzer.band_level(band.low, band.high)
             };
             band.level = (level * band.gain).clamp(0.0, 1.0);
-            let active = band.level >= band.threshold;
-            if active != band.active {
-                band.active = active;
+            if band.mode == TriggerMode::Level {
+                band.active = band.level >= band.threshold;
+                band.trigger.reset();
                 if self.osc_enabled && !band.address.trim().is_empty() {
-                    let packet = OscPacket::Message(OscMessage {
-                        addr: band.address.clone(),
-                        args: vec![OscType::Float(if active { 1.0 } else { 0.0 })],
-                    });
-                    match rosc::encoder::encode(&packet)
-                        .map_err(|e| e.to_string())
-                        .and_then(|data| {
-                            self.socket
-                                .as_ref()
-                                .ok_or("OSC socket unavailable".to_string())?
-                                .send_to(&data, (self.destination.as_str(), self.osc_port))
-                                .map(|_| ())
-                                .map_err(|e| e.to_string())
-                        }) {
-                        Ok(()) => {}
-                        Err(e) => self.status = format!("OSC: {e}"),
+                    events.push((
+                        band.address.clone(),
+                        (band.level / band.threshold).clamp(0.0, 1.0),
+                    ));
+                }
+            } else {
+                let (active, event) = band.trigger.update(
+                    band.active,
+                    band.level >= band.threshold,
+                    now,
+                    band.on_delay,
+                    band.off_delay,
+                    band.decay,
+                );
+                band.active = active;
+                if let Some(value) = event {
+                    if self.osc_enabled && !band.address.trim().is_empty() {
+                        events.push((band.address.clone(), if value { 1.0 } else { 0.0 }));
                     }
                 }
             }
+        }
+        for (address, value) in events {
+            self.send_osc_float(&address, value);
         }
     }
 }
@@ -1089,7 +1239,7 @@ impl eframe::App for Beatd {
                                     }
                                 });
                                 ui.add_space(10.0);
-                                ui.label("Frequency range (Hz)");
+                                ui.label(egui::RichText::new("Parameters").strong());
                                 let input_width = (ui.available_width() - 80.0).max(40.0);
                                 egui::Grid::new(("settings", i))
                                     .min_col_width(72.0)
@@ -1106,21 +1256,24 @@ impl eframe::App for Beatd {
                                             palette.widget_bg;
                                         ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
                                             palette.widget_bg;
-                                        ui.label("Low");
+                                        field_label(ui, "Mode");
+                                        mode_combo(ui, ("mode", i), &mut band.mode, input_width);
+                                        ui.end_row();
+                                        field_label(ui, "Low");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.low)
                                                 .range(0.0..=20000.0),
                                         );
                                         ui.end_row();
-                                        ui.label("High");
+                                        field_label(ui, "High");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.high)
                                                 .range(band.low + 1.0..=24000.0),
                                         );
                                         ui.end_row();
-                                        ui.label("Gain");
+                                        field_label(ui, "Gain");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
                                             egui::DragValue::new(&mut band.gain)
@@ -1128,11 +1281,41 @@ impl eframe::App for Beatd {
                                                 .speed(0.1),
                                         );
                                         ui.end_row();
+                                        field_label(ui, "On delay");
+                                        ui.add_sized(
+                                            [input_width, ui.spacing().interact_size.y],
+                                            egui::DragValue::new(&mut band.on_delay)
+                                                .range(0.0..=10.0)
+                                                .speed(0.01)
+                                                .max_decimals(2)
+                                                .suffix(" s"),
+                                        );
+                                        ui.end_row();
+                                        field_label(ui, "Off delay");
+                                        ui.add_sized(
+                                            [input_width, ui.spacing().interact_size.y],
+                                            egui::DragValue::new(&mut band.off_delay)
+                                                .range(0.0..=10.0)
+                                                .speed(0.01)
+                                                .max_decimals(2)
+                                                .suffix(" s"),
+                                        );
+                                        ui.end_row();
+                                        field_label(ui, "Decay");
+                                        ui.add_sized(
+                                            [input_width, ui.spacing().interact_size.y],
+                                            egui::DragValue::new(&mut band.decay)
+                                                .range(0.0..=30.0)
+                                                .speed(0.1)
+                                                .max_decimals(1)
+                                                .suffix(" s"),
+                                        );
+                                        ui.end_row();
                                         ui.allocate_space(egui::vec2(1.0, 4.0));
                                         ui.end_row();
-                                        ui.label("Output");
+                                        field_label(ui, "Output");
                                         ui.end_row();
-                                        ui.label("OSC");
+                                        field_label(ui, "OSC");
                                         let previous = band.address.clone();
                                         if ui
                                             .add(
@@ -1245,7 +1428,7 @@ impl eframe::App for Beatd {
                                 .clamp(0.00001, 1.0);
                             }
                             ui.add_space(10.0);
-                            ui.label(" ");
+                            ui.label(egui::RichText::new("Parameters").strong());
                             let input_width = (ui.available_width() - 80.0).max(40.0);
                             egui::Grid::new("level_settings")
                                 .min_col_width(72.0)
@@ -1261,19 +1444,53 @@ impl eframe::App for Beatd {
                                         palette.widget_bg;
                                     ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
                                         palette.widget_bg;
+                                    field_label(ui, "Mode");
+                                    mode_combo(
+                                        ui,
+                                        "mode_level",
+                                        &mut self.level_channel.mode,
+                                        input_width,
+                                    );
+                                    ui.end_row();
+                                    field_label(ui, "On delay");
+                                    ui.add_sized(
+                                        [input_width, ui.spacing().interact_size.y],
+                                        egui::DragValue::new(&mut self.level_channel.on_delay)
+                                            .range(0.0..=10.0)
+                                            .speed(0.01)
+                                            .max_decimals(2)
+                                            .suffix(" s"),
+                                    );
+                                    ui.end_row();
+                                    field_label(ui, "Off delay");
+                                    ui.add_sized(
+                                        [input_width, ui.spacing().interact_size.y],
+                                        egui::DragValue::new(&mut self.level_channel.off_delay)
+                                            .range(0.0..=10.0)
+                                            .speed(0.01)
+                                            .max_decimals(2)
+                                            .suffix(" s"),
+                                    );
+                                    ui.end_row();
+                                    field_label(ui, "Decay");
+                                    ui.add_sized(
+                                        [input_width, ui.spacing().interact_size.y],
+                                        egui::DragValue::new(&mut self.level_channel.decay)
+                                            .range(0.0..=30.0)
+                                            .speed(0.1)
+                                            .max_decimals(1)
+                                            .suffix(" s"),
+                                    );
+                                    ui.end_row();
                                     for _ in 0..3 {
                                         ui.label(" ");
-                                        ui.allocate_space(egui::vec2(
-                                            input_width,
-                                            ui.spacing().interact_size.y,
-                                        ));
                                         ui.end_row();
                                     }
                                     ui.allocate_space(egui::vec2(1.0, 4.0));
                                     ui.end_row();
-                                    ui.label("Output");
+                                    field_label(ui, "Output");
                                     ui.end_row();
-                                    ui.label("OSC");
+                                    field_label(ui, "OSC");
                                     let previous = self.level_channel.address.clone();
                                     if ui
                                         .add(
@@ -1328,4 +1545,57 @@ pub fn run() -> eframe::Result {
         },
         Box::new(|_| Ok(Box::<Beatd>::default())),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn trigger_applies_on_and_off_delays() {
+        let start = Instant::now();
+        let mut trigger = Trigger::default();
+        let mut step = |active, above, ms| {
+            trigger.update(
+                active,
+                above,
+                start + Duration::from_millis(ms),
+                0.1,
+                0.2,
+                0.0,
+            )
+        };
+        assert_eq!(step(false, true, 0), (false, None));
+        assert_eq!(step(false, true, 50), (false, None));
+        assert_eq!(step(false, true, 100), (true, Some(true)));
+        assert_eq!(step(true, false, 150), (true, None));
+        assert_eq!(step(true, false, 350), (false, Some(false)));
+    }
+
+    #[test]
+    fn decay_requires_a_fall_before_retriggering() {
+        let start = Instant::now();
+        let mut trigger = Trigger::default();
+        assert_eq!(
+            trigger.update(false, true, start, 0.0, 0.0, 1.0),
+            (true, Some(true))
+        );
+        assert_eq!(
+            trigger.update(true, true, start + Duration::from_secs(1), 0.0, 0.0, 1.0),
+            (false, Some(false))
+        );
+        assert_eq!(
+            trigger.update(false, true, start + Duration::from_secs(2), 0.0, 0.0, 1.0),
+            (false, None)
+        );
+        assert_eq!(
+            trigger.update(false, false, start + Duration::from_secs(3), 0.0, 0.0, 1.0),
+            (false, None)
+        );
+        assert_eq!(
+            trigger.update(false, true, start + Duration::from_secs(4), 0.0, 0.0, 1.0),
+            (true, Some(true))
+        );
+    }
 }
