@@ -64,7 +64,7 @@ cargo build -p beatd --features ffi
 
 beatd_analyzer *analyzer = beatd_new(48000);
 if (analyzer == NULL) {
-    return 1; 
+    return 1;
 }
 
 beatd_set_bpm_range_min(analyzer, 75);
@@ -88,7 +88,7 @@ npm i beatd
 ```
 
 ```js
-import { createAnalyzer } from 'beatd';
+import { createAnalyzer } from "beatd";
 
 using analyzer = createAnalyzer({ sampleRate: 48000 });
 
@@ -106,13 +106,13 @@ console.log(analyzer.beatOffsets(analyzer.bpm()));
 .NETプロジェクトの場合、NuGetからパッケージを追加できます。
 
 ```sh
-dotnet add Beatd
+dotnet package add Beatd
 ```
 
 Unityの場合、Package Managerからgit URLでパッケージを追加できます。
 
 ```
-https://github.com/nuskey8/beatd.git?path=beatd-dotnet/Packages/com.nuskey8.beatd.unity
+https://github.com/nuskey8/beatd.git?path=beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity
 ```
 
 ```csharp
@@ -127,6 +127,15 @@ Console.WriteLine($"{analyzer.Level}, {analyzer.Bpm}");
 float[] spectrum = analyzer.GetSpectrum();
 float[] beats = analyzer.GetBeatOffsets(analyzer.Bpm);
 ```
+
+なお、.NET/Unity版は現在以下のプラットフォームにのみ対応しています。
+
+| プラットフォーム    | RID         | .NET (NuGet) | Unity |
+| :------------------ | :---------- | :----------: | :---: |
+| Windows x64         | `win-x64`   |      ✅      |  ✅   |
+| Linux x64           | `linux-x64` |      ✅      |  ✅   |
+| macOS Intel         | `osx-x64`   |      ✅      |  ✅   |
+| macOS Apple Silicon | `osx-arm64` |      ✅      |  ✅   |
 
 ## ライセンス
 
