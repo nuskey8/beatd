@@ -33,8 +33,8 @@ export class Analyzer {
   setSpectrumGain(gain: number): void { this.inner.set_spectrum_gain(gain); }
   setSpectrumCompression(compression: number): void { this.inner.set_spectrum_compression(compression); }
   reset(): void { this.inner.reset(); }
-  free(): void { this.inner.free(); }
-  [Symbol.dispose](): void { this.free(); }
+  dispose(): void { this.inner.free(); }
+  [Symbol.dispose](): void { this.dispose(); }
 }
 
 export function createAnalyzer(options: AnalyzerOptions): Analyzer {

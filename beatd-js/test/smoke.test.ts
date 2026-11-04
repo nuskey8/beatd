@@ -8,16 +8,16 @@ test('analyzes samples and resets', () => {
   expect(analyzer.spectrum()).toHaveLength(1024);
   analyzer.reset();
   expect(analyzer.spectrum()).toHaveLength(0);
-  analyzer.free();
+  analyzer.dispose();
 });
 
 test('disposes with using', () => {
   let disposed = false;
   const analyzer = createAnalyzer({ sampleRate: 48000 });
-  const free = analyzer.free.bind(analyzer);
-  analyzer.free = () => {
+  const dispose = analyzer.dispose.bind(analyzer);
+  analyzer.dispose = () => {
     disposed = true;
-    free();
+    dispose();
   };
   {
     using disposable = analyzer;
@@ -41,5 +41,5 @@ test('settings, waveform and beat offsets', () => {
   analyzer.setBpmEnabled(false);
   analyzer.reset();
   expect(analyzer.bpmRangeMin()).toBe(90);
-  analyzer.free();
+  analyzer.dispose();
 });
