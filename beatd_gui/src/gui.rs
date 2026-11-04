@@ -291,6 +291,9 @@ struct Beatd {
     bpm_beat_age: f32,
     gain: f32,
     compressor: f32,
+    show_waveform: bool,
+    show_spectrum: bool,
+    show_channels: bool,
 }
 impl Default for Beatd {
     fn default() -> Self {
@@ -321,6 +324,9 @@ impl Default for Beatd {
             bpm_beat_age: f32::INFINITY,
             gain: 1.0,
             compressor: 1.0,
+            show_waveform: true,
+            show_spectrum: true,
+            show_channels: true,
         };
         app.refresh_devices();
         if let Some(name) = cpal::default_host()
@@ -867,6 +873,14 @@ impl eframe::App for Beatd {
                     });
                 });
                 ui.separator();
+                egui::CollapsingHeader::new(egui::RichText::new("View").strong())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.checkbox(&mut self.show_waveform, "Waveform");
+                        ui.checkbox(&mut self.show_spectrum, "Spectrum");
+                        ui.checkbox(&mut self.show_channels, "Channels");
+                    });
+                ui.separator();
                 egui::CollapsingHeader::new(egui::RichText::new("Presets").strong())
                     .default_open(true)
                     .show(ui, |ui| {
@@ -945,218 +959,430 @@ impl eframe::App for Beatd {
                         self.status = "Audio stopped".into();
                     }
                 });
-                ui.separator();
-                let (wave_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 80.0),
-                    egui::Sense::hover(),
-                );
-                ui.painter().rect_filled(wave_rect, 0.0, palette.wave_bg);
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(wave_rect.left(), wave_rect.center().y),
-                        egui::pos2(wave_rect.right(), wave_rect.center().y),
-                    ],
-                    egui::Stroke::new(1.0_f32, palette.wave_center),
-                );
-                let width = wave_rect.width() / 250.0;
-                for (i, peak) in self.analyzer.waveform().iter().rev().enumerate() {
-                    let x = wave_rect.right() - i as f32 * width;
-                    let h = peak.min(1.0) * wave_rect.height() * 0.48;
+                if self.show_waveform {
+                    ui.separator();
+                    let (wave_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 80.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(wave_rect, 0.0, palette.wave_bg);
                     ui.painter().line_segment(
                         [
-                            egui::pos2(x, wave_rect.center().y - h),
-                            egui::pos2(x, wave_rect.center().y + h),
+                            egui::pos2(wave_rect.left(), wave_rect.center().y),
+                            egui::pos2(wave_rect.right(), wave_rect.center().y),
                         ],
-                        egui::Stroke::new(2.0_f32, palette.wave),
+                        egui::Stroke::new(1.0_f32, palette.wave_center),
                     );
-                }
-                for age in self.analyzer.beat_offsets(self.bpm) {
-                    if age <= 5.0 {
-                        let x = wave_rect.right() - age / 5.0 * wave_rect.width();
+                    let width = wave_rect.width() / 250.0;
+                    for (i, peak) in self.analyzer.waveform().iter().rev().enumerate() {
+                        let x = wave_rect.right() - i as f32 * width;
+                        let h = peak.min(1.0) * wave_rect.height() * 0.48;
                         ui.painter().line_segment(
                             [
-                                egui::pos2(x, wave_rect.top()),
-                                egui::pos2(x, wave_rect.bottom()),
+                                egui::pos2(x, wave_rect.center().y - h),
+                                egui::pos2(x, wave_rect.center().y + h),
                             ],
-                            egui::Stroke::new(1.5_f32, palette.beat),
+                            egui::Stroke::new(2.0_f32, palette.wave),
                         );
+                    }
+                    for age in self.analyzer.beat_offsets(self.bpm) {
+                        if age <= 5.0 {
+                            let x = wave_rect.right() - age / 5.0 * wave_rect.width();
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(x, wave_rect.top()),
+                                    egui::pos2(x, wave_rect.bottom()),
+                                ],
+                                egui::Stroke::new(1.5_f32, palette.beat),
+                            );
+                        }
                     }
                 }
-                ui.separator();
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 240.0),
-                    egui::Sense::hover(),
-                );
-                let points: Vec<egui::Pos2> = self
-                    .analyzer
-                    .spectrum()
-                    .iter()
-                    .enumerate()
-                    .skip(1)
-                    .map(|(i, v)| {
-                        let hz = i as f32 * self.analyzer.sample_rate() as f32 / FFT as f32;
-                        let x = (hz / 20.0).ln()
-                            / ((self.analyzer.sample_rate() as f32 / 2.0) / 20.0).ln();
-                        let y = ((20.0 * v.max(0.00001).log10() + 100.0) / 100.0).clamp(0.0, 1.0);
-                        egui::pos2(
-                            rect.left() + x * rect.width(),
-                            rect.bottom() - y * rect.height(),
-                        )
-                    })
-                    .collect();
-                ui.painter().add(egui::Shape::line(
-                    points,
-                    egui::Stroke::new(1.5_f32, palette.spectrum),
-                ));
-                let rate = self.analyzer.sample_rate() as f32;
-                let to_x = |hz: f32| {
-                    rect.left()
-                        + ((hz.max(20.0) / 20.0).ln() / ((rate / 2.0) / 20.0).ln()).clamp(0.0, 1.0)
-                            * rect.width()
-                };
-                for (i, band) in self.bands.iter_mut().enumerate() {
-                    let left = to_x(band.low);
-                    let right = to_x(band.high);
-                    let amplitude = band.threshold / band.gain;
-                    let height =
-                        ((20.0 * amplitude.max(0.00001).log10() + 100.0) / 100.0).clamp(0.0, 1.0);
-                    let top = rect.bottom() - height * rect.height();
-                    let bar = egui::Rect::from_min_max(
-                        egui::pos2(left, top),
-                        egui::pos2(right.max(left + 14.0), rect.bottom()),
+                if self.show_spectrum {
+                    ui.separator();
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 240.0),
+                        egui::Sense::hover(),
                     );
-                    ui.painter()
-                        .rect_filled(bar, 2.0, palette.band_fill(i, band.active));
-                    ui.painter().line_segment(
-                        [bar.left_top(), bar.right_top()],
-                        egui::Stroke::new(
-                            2.0_f32,
-                            if band.active {
-                                palette.threshold_active
-                            } else {
-                                palette.threshold_inactive
-                            },
-                        ),
-                    );
-                    ui.painter().text(
-                        bar.center(),
-                        egui::Align2::CENTER_CENTER,
-                        ["Bass", "Low Mid", "High Mid", "Treble"][i],
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::WHITE,
-                    );
-                    let center = egui::Rect::from_min_max(
-                        egui::pos2(bar.left() + 5.0, bar.top().min(rect.bottom() - 12.0)),
-                        bar.max - egui::vec2(5.0, 0.0),
-                    );
-                    let response = ui
-                        .interact(center, ui.id().with(("band", i)), egui::Sense::drag())
-                        .on_hover_cursor(egui::CursorIcon::Grab);
-                    if response.dragged() {
-                        let dy = ui.input(|input| input.pointer.delta().y);
-                        band.threshold = (band.threshold
-                            * 10.0_f32.powf(-5.0 * dy / rect.height()))
-                        .clamp(band.gain * 0.00001, 1.0);
-                        let factor = (((rate / 2.0) / 20.0).ln()
-                            * ui.input(|input| input.pointer.delta().x)
-                            / rect.width())
-                        .exp();
-                        let upper = (rate / 2.0).min(24000.0) / band.high.max(1.0);
-                        let lower = (20.0 / band.low.max(20.0)).min(upper);
-                        let factor = factor.clamp(lower, upper.max(lower));
-                        band.low = (band.low.max(20.0) * factor).max(20.0);
-                        band.high *= factor;
-                    }
-                    let threshold_handle = egui::Rect::from_min_max(
-                        egui::pos2(bar.left() + 5.0, (bar.top() - 6.0).max(rect.top())),
-                        egui::pos2(bar.right() - 5.0, (bar.top() + 6.0).min(rect.bottom())),
-                    );
-                    let threshold_response = ui
-                        .interact(
-                            threshold_handle,
-                            ui.id().with(("threshold", i)),
-                            egui::Sense::drag(),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
-                    if threshold_response.dragged() {
-                        let dy = ui.input(|input| input.pointer.delta().y);
-                        band.threshold = (band.threshold
-                            * 10.0_f32.powf(-5.0 * dy / rect.height()))
-                        .clamp(band.gain * 0.00001, 1.0);
-                    }
-                    for edge in [false, true] {
-                        let x = if edge { bar.right() } else { bar.left() };
-                        let handle = egui::Rect::from_center_size(
-                            egui::pos2(x, bar.center().y),
-                            egui::vec2(10.0, 24.0),
+                    let points: Vec<egui::Pos2> = self
+                        .analyzer
+                        .spectrum()
+                        .iter()
+                        .enumerate()
+                        .skip(1)
+                        .map(|(i, v)| {
+                            let hz = i as f32 * self.analyzer.sample_rate() as f32 / FFT as f32;
+                            let x = (hz / 20.0).ln()
+                                / ((self.analyzer.sample_rate() as f32 / 2.0) / 20.0).ln();
+                            let y =
+                                ((20.0 * v.max(0.00001).log10() + 100.0) / 100.0).clamp(0.0, 1.0);
+                            egui::pos2(
+                                rect.left() + x * rect.width(),
+                                rect.bottom() - y * rect.height(),
+                            )
+                        })
+                        .collect();
+                    ui.painter().add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5_f32, palette.spectrum),
+                    ));
+                    let rate = self.analyzer.sample_rate() as f32;
+                    let to_x = |hz: f32| {
+                        rect.left()
+                            + ((hz.max(20.0) / 20.0).ln() / ((rate / 2.0) / 20.0).ln())
+                                .clamp(0.0, 1.0)
+                                * rect.width()
+                    };
+                    for (i, band) in self.bands.iter_mut().enumerate() {
+                        let left = to_x(band.low);
+                        let right = to_x(band.high);
+                        let amplitude = band.threshold / band.gain;
+                        let height = ((20.0 * amplitude.max(0.00001).log10() + 100.0) / 100.0)
+                            .clamp(0.0, 1.0);
+                        let top = rect.bottom() - height * rect.height();
+                        let bar = egui::Rect::from_min_max(
+                            egui::pos2(left, top),
+                            egui::pos2(right.max(left + 14.0), rect.bottom()),
+                        );
+                        ui.painter()
+                            .rect_filled(bar, 2.0, palette.band_fill(i, band.active));
+                        ui.painter().line_segment(
+                            [bar.left_top(), bar.right_top()],
+                            egui::Stroke::new(
+                                2.0_f32,
+                                if band.active {
+                                    palette.threshold_active
+                                } else {
+                                    palette.threshold_inactive
+                                },
+                            ),
+                        );
+                        ui.painter().text(
+                            bar.center(),
+                            egui::Align2::CENTER_CENTER,
+                            ["Bass", "Low Mid", "High Mid", "Treble"][i],
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::WHITE,
+                        );
+                        let center = egui::Rect::from_min_max(
+                            egui::pos2(bar.left() + 5.0, bar.top().min(rect.bottom() - 12.0)),
+                            bar.max - egui::vec2(5.0, 0.0),
                         );
                         let response = ui
+                            .interact(center, ui.id().with(("band", i)), egui::Sense::drag())
+                            .on_hover_cursor(egui::CursorIcon::Grab);
+                        if response.dragged() {
+                            let dy = ui.input(|input| input.pointer.delta().y);
+                            band.threshold = (band.threshold
+                                * 10.0_f32.powf(-5.0 * dy / rect.height()))
+                            .clamp(band.gain * 0.00001, 1.0);
+                            let factor = (((rate / 2.0) / 20.0).ln()
+                                * ui.input(|input| input.pointer.delta().x)
+                                / rect.width())
+                            .exp();
+                            let upper = (rate / 2.0).min(24000.0) / band.high.max(1.0);
+                            let lower = (20.0 / band.low.max(20.0)).min(upper);
+                            let factor = factor.clamp(lower, upper.max(lower));
+                            band.low = (band.low.max(20.0) * factor).max(20.0);
+                            band.high *= factor;
+                        }
+                        let threshold_handle = egui::Rect::from_min_max(
+                            egui::pos2(bar.left() + 5.0, (bar.top() - 6.0).max(rect.top())),
+                            egui::pos2(bar.right() - 5.0, (bar.top() + 6.0).min(rect.bottom())),
+                        );
+                        let threshold_response = ui
                             .interact(
-                                handle,
-                                ui.id().with(("band_edge", i, edge)),
+                                threshold_handle,
+                                ui.id().with(("threshold", i)),
                                 egui::Sense::drag(),
                             )
-                            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                        if response.dragged() {
-                            if let Some(pointer) = response.interact_pointer_pos() {
-                                let hz = 20.0
-                                    * ((rate / 2.0 / 20.0).ln()
-                                        * ((pointer.x - rect.left()) / rect.width())
-                                            .clamp(0.0, 1.0))
-                                    .exp();
-                                if edge {
-                                    band.high = hz.clamp(
-                                        (band.low + 1.0).min((rate / 2.0).min(24000.0)),
-                                        (rate / 2.0).min(24000.0),
-                                    );
-                                } else {
-                                    band.low = hz.clamp(
-                                        20.0_f32.min(band.high - 1.0),
-                                        (band.high - 1.0).max(20.0),
-                                    );
+                            .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+                        if threshold_response.dragged() {
+                            let dy = ui.input(|input| input.pointer.delta().y);
+                            band.threshold = (band.threshold
+                                * 10.0_f32.powf(-5.0 * dy / rect.height()))
+                            .clamp(band.gain * 0.00001, 1.0);
+                        }
+                        for edge in [false, true] {
+                            let x = if edge { bar.right() } else { bar.left() };
+                            let handle = egui::Rect::from_center_size(
+                                egui::pos2(x, bar.center().y),
+                                egui::vec2(10.0, 24.0),
+                            );
+                            let response = ui
+                                .interact(
+                                    handle,
+                                    ui.id().with(("band_edge", i, edge)),
+                                    egui::Sense::drag(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                            if response.dragged() {
+                                if let Some(pointer) = response.interact_pointer_pos() {
+                                    let hz = 20.0
+                                        * ((rate / 2.0 / 20.0).ln()
+                                            * ((pointer.x - rect.left()) / rect.width())
+                                                .clamp(0.0, 1.0))
+                                        .exp();
+                                    if edge {
+                                        band.high = hz.clamp(
+                                            (band.low + 1.0).min((rate / 2.0).min(24000.0)),
+                                            (rate / 2.0).min(24000.0),
+                                        );
+                                    } else {
+                                        band.low = hz.clamp(
+                                            20.0_f32.min(band.high - 1.0),
+                                            (band.high - 1.0).max(20.0),
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                let (axis, _) =
-                    ui.allocate_exact_size(egui::vec2(rect.width(), 22.0), egui::Sense::hover());
-                for hz in [
-                    20.0_f32, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0,
-                ] {
-                    if hz > rate / 2.0 {
-                        continue;
+                    let (axis, _) = ui
+                        .allocate_exact_size(egui::vec2(rect.width(), 22.0), egui::Sense::hover());
+                    for hz in [
+                        20.0_f32, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0,
+                        20000.0,
+                    ] {
+                        if hz > rate / 2.0 {
+                            continue;
+                        }
+                        let x = to_x(hz);
+                        let label = if hz >= 1000.0 {
+                            format!("{}k", hz / 1000.0)
+                        } else {
+                            format!("{hz:.0}")
+                        };
+                        ui.painter().text(
+                            egui::pos2(x, axis.top()),
+                            egui::Align2::CENTER_TOP,
+                            label,
+                            egui::FontId::proportional(11.0),
+                            ui.visuals().weak_text_color(),
+                        );
                     }
-                    let x = to_x(hz);
-                    let label = if hz >= 1000.0 {
-                        format!("{}k", hz / 1000.0)
-                    } else {
-                        format!("{hz:.0}")
-                    };
-                    ui.painter().text(
-                        egui::pos2(x, axis.top()),
-                        egui::Align2::CENTER_TOP,
-                        label,
-                        egui::FontId::proportional(11.0),
-                        ui.visuals().weak_text_color(),
-                    );
                 }
-                ui.separator();
-                let colors = palette.bands;
-                ui.columns(5, |columns| {
-                    for (i, (ui, band)) in columns.iter_mut().zip(self.bands.iter_mut()).enumerate()
-                    {
+                if self.show_channels {
+                    ui.separator();
+                    let colors = palette.bands;
+                    ui.columns(5, |columns| {
+                        for (i, (ui, band)) in
+                            columns.iter_mut().zip(self.bands.iter_mut()).enumerate()
+                        {
+                            egui::Frame::new()
+                                .fill(palette.band_frame(i))
+                                .inner_margin(10.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.heading(
+                                            egui::RichText::new(
+                                                ["Bass", "Low Mid", "High Mid", "Treble"][i],
+                                            )
+                                            .color(colors[i])
+                                            .strong(),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    egui::vec2(14.0, 14.0),
+                                                    egui::Sense::hover(),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    rect.center(),
+                                                    6.0,
+                                                    if band.active {
+                                                        colors[i]
+                                                    } else {
+                                                        palette.dot_inactive
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    });
+                                    ui.add_space(12.0);
+                                    ui.horizontal(|ui| {
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(24.0, 160.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
+                                        let fill = egui::Rect::from_min_max(
+                                            egui::pos2(
+                                                rect.left(),
+                                                rect.bottom()
+                                                    - rect.height()
+                                                        * ((20.0
+                                                            * (band.level / band.gain)
+                                                                .max(0.00001)
+                                                                .log10()
+                                                            + 100.0)
+                                                            / 100.0)
+                                                            .clamp(0.0, 1.0),
+                                            ),
+                                            rect.right_bottom(),
+                                        );
+                                        ui.painter().rect_filled(fill, 3.0, colors[i]);
+                                        let height = ((20.0
+                                            * (band.threshold / band.gain).max(0.00001).log10()
+                                            + 100.0)
+                                            / 100.0)
+                                            .clamp(0.0, 1.0);
+                                        let y = rect.bottom() - rect.height() * height;
+                                        ui.painter().line_segment(
+                                            [
+                                                egui::pos2(rect.left() - 5.0, y),
+                                                egui::pos2(rect.right() + 5.0, y),
+                                            ],
+                                            egui::Stroke::new(
+                                                2.0_f32,
+                                                if band.active {
+                                                    palette.threshold_active
+                                                } else {
+                                                    palette.threshold_inactive
+                                                },
+                                            ),
+                                        );
+                                        let handle = egui::Rect::from_center_size(
+                                            egui::pos2(rect.center().x, y),
+                                            egui::vec2(rect.width() + 10.0, 14.0),
+                                        );
+                                        let response = ui
+                                            .interact(
+                                                handle,
+                                                ui.id().with(("meter_threshold", i)),
+                                                egui::Sense::drag(),
+                                            )
+                                            .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+                                        if response.dragged() {
+                                            let dy = ui.input(|input| input.pointer.delta().y);
+                                            band.threshold = (band.threshold
+                                                * 10.0_f32.powf(-5.0 * dy / rect.height()))
+                                            .clamp(band.gain * 0.00001, 1.0);
+                                        }
+                                    });
+                                    ui.add_space(10.0);
+                                    ui.label(egui::RichText::new("Parameters").strong());
+                                    let input_width = (ui.available_width() - 80.0).max(40.0);
+                                    egui::Grid::new(("settings", i))
+                                        .min_col_width(72.0)
+                                        .num_columns(2)
+                                        .show(ui, |ui| {
+                                            ui.visuals_mut().extreme_bg_color = palette.widget_bg;
+                                            ui.visuals_mut().widgets.inactive.bg_fill =
+                                                palette.widget_bg;
+                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                                palette.widget_bg;
+                                            ui.visuals_mut().widgets.hovered.weak_bg_fill =
+                                                palette.widget_bg;
+                                            ui.visuals_mut().widgets.active.weak_bg_fill =
+                                                palette.widget_bg;
+                                            ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
+                                                palette.widget_bg;
+                                            field_label(ui, "Mode");
+                                            mode_combo(
+                                                ui,
+                                                ("mode", i),
+                                                &mut band.mode,
+                                                input_width,
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "Low");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.low)
+                                                    .range(0.0..=20000.0),
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "High");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.high)
+                                                    .range(band.low + 1.0..=24000.0),
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "Gain");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.gain)
+                                                    .range(0.1..=20.0)
+                                                    .speed(0.1),
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "On delay");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.on_delay)
+                                                    .range(0.0..=10.0)
+                                                    .speed(0.01)
+                                                    .max_decimals(2)
+                                                    .suffix(" s"),
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "Off delay");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.off_delay)
+                                                    .range(0.0..=10.0)
+                                                    .speed(0.01)
+                                                    .max_decimals(2)
+                                                    .suffix(" s"),
+                                            );
+                                            ui.end_row();
+                                            field_label(ui, "Decay");
+                                            ui.add_sized(
+                                                [input_width, ui.spacing().interact_size.y],
+                                                egui::DragValue::new(&mut band.decay)
+                                                    .range(0.0..=30.0)
+                                                    .speed(0.1)
+                                                    .max_decimals(1)
+                                                    .suffix(" s"),
+                                            );
+                                            ui.end_row();
+                                            ui.allocate_space(egui::vec2(1.0, 4.0));
+                                            ui.end_row();
+                                            field_label(ui, "Output");
+                                            ui.end_row();
+                                            field_label(ui, "OSC");
+                                            let previous = band.address.clone();
+                                            if ui
+                                                .add(
+                                                    egui::TextEdit::singleline(&mut band.address)
+                                                        .desired_width(input_width),
+                                                )
+                                                .changed()
+                                                && band.active
+                                                && self.osc_enabled
+                                                && !previous.trim().is_empty()
+                                            {
+                                                if let (Some(socket), Ok(data)) = (
+                                                    &self.socket,
+                                                    rosc::encoder::encode(&OscPacket::Message(
+                                                        OscMessage {
+                                                            addr: previous,
+                                                            args: vec![OscType::Float(0.0)],
+                                                        },
+                                                    )),
+                                                ) {
+                                                    if let Err(e) = socket.send_to(
+                                                        &data,
+                                                        (self.destination.as_str(), self.osc_port),
+                                                    ) {
+                                                        self.status = format!("OSC: {e}");
+                                                    }
+                                                }
+                                            }
+                                            ui.end_row();
+                                        });
+                                });
+                        }
                         egui::Frame::new()
-                            .fill(palette.band_frame(i))
+                            .fill(palette.frame)
                             .inner_margin(10.0)
-                            .show(ui, |ui| {
+                            .show(&mut columns[4], |ui| {
                                 ui.horizontal(|ui| {
                                     ui.heading(
-                                        egui::RichText::new(
-                                            ["Bass", "Low Mid", "High Mid", "Treble"][i],
-                                        )
-                                        .color(colors[i])
-                                        .strong(),
+                                        egui::RichText::new("Level").color(palette.level).strong(),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -1168,8 +1394,8 @@ impl eframe::App for Beatd {
                                             ui.painter().circle_filled(
                                                 rect.center(),
                                                 6.0,
-                                                if band.active {
-                                                    colors[i]
+                                                if self.level_channel.active {
+                                                    palette.level
                                                 } else {
                                                     palette.dot_inactive
                                                 },
@@ -1178,70 +1404,63 @@ impl eframe::App for Beatd {
                                     );
                                 });
                                 ui.add_space(12.0);
-                                ui.horizontal(|ui| {
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::vec2(24.0, 160.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
-                                    let fill = egui::Rect::from_min_max(
-                                        egui::pos2(
-                                            rect.left(),
-                                            rect.bottom()
-                                                - rect.height()
-                                                    * ((20.0
-                                                        * (band.level / band.gain)
-                                                            .max(0.00001)
-                                                            .log10()
-                                                        + 100.0)
-                                                        / 100.0)
-                                                        .clamp(0.0, 1.0),
-                                        ),
-                                        rect.right_bottom(),
-                                    );
-                                    ui.painter().rect_filled(fill, 3.0, colors[i]);
-                                    let height = ((20.0
-                                        * (band.threshold / band.gain).max(0.00001).log10()
-                                        + 100.0)
-                                        / 100.0)
-                                        .clamp(0.0, 1.0);
-                                    let y = rect.bottom() - rect.height() * height;
-                                    ui.painter().line_segment(
-                                        [
-                                            egui::pos2(rect.left() - 5.0, y),
-                                            egui::pos2(rect.right() + 5.0, y),
-                                        ],
-                                        egui::Stroke::new(
-                                            2.0_f32,
-                                            if band.active {
-                                                palette.threshold_active
-                                            } else {
-                                                palette.threshold_inactive
-                                            },
-                                        ),
-                                    );
-                                    let handle = egui::Rect::from_center_size(
-                                        egui::pos2(rect.center().x, y),
-                                        egui::vec2(rect.width() + 10.0, 14.0),
-                                    );
-                                    let response = ui
-                                        .interact(
-                                            handle,
-                                            ui.id().with(("meter_threshold", i)),
-                                            egui::Sense::drag(),
-                                        )
-                                        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
-                                    if response.dragged() {
-                                        let dy = ui.input(|input| input.pointer.delta().y);
-                                        band.threshold = (band.threshold
-                                            * 10.0_f32.powf(-5.0 * dy / rect.height()))
-                                        .clamp(band.gain * 0.00001, 1.0);
-                                    }
-                                });
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(24.0, 160.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
+                                let height = ((20.0 * self.analyzer.level().max(0.00001).log10()
+                                    + 100.0)
+                                    / 100.0)
+                                    .clamp(0.0, 1.0);
+                                let fill = egui::Rect::from_min_max(
+                                    egui::pos2(rect.left(), rect.bottom() - rect.height() * height),
+                                    rect.right_bottom(),
+                                );
+                                ui.painter().rect_filled(fill, 3.0, palette.level);
+                                let threshold = &mut self.level_channel.threshold;
+                                let y = rect.bottom()
+                                    - rect.height()
+                                        * ((20.0 * threshold.max(0.00001).log10() + 100.0) / 100.0)
+                                            .clamp(0.0, 1.0);
+                                ui.painter().line_segment(
+                                    [
+                                        egui::pos2(rect.left() - 5.0, y),
+                                        egui::pos2(rect.right() + 5.0, y),
+                                    ],
+                                    egui::Stroke::new(
+                                        2.0_f32,
+                                        if self.level_channel.active {
+                                            palette.threshold_active
+                                        } else {
+                                            palette.threshold_inactive
+                                        },
+                                    ),
+                                );
+                                let handle = egui::Rect::from_center_size(
+                                    egui::pos2(rect.center().x, y),
+                                    egui::vec2(34.0, 14.0),
+                                );
+                                if ui
+                                    .interact(
+                                        handle,
+                                        ui.id().with("level_threshold"),
+                                        egui::Sense::drag(),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+                                    .dragged()
+                                {
+                                    *threshold = (*threshold
+                                        * 10.0_f32.powf(
+                                            -5.0 * ui.input(|input| input.pointer.delta().y)
+                                                / rect.height(),
+                                        ))
+                                    .clamp(0.00001, 1.0);
+                                }
                                 ui.add_space(10.0);
                                 ui.label(egui::RichText::new("Parameters").strong());
                                 let input_width = (ui.available_width() - 80.0).max(40.0);
-                                egui::Grid::new(("settings", i))
+                                egui::Grid::new("level_settings")
                                     .min_col_width(72.0)
                                     .num_columns(2)
                                     .show(ui, |ui| {
@@ -1257,34 +1476,17 @@ impl eframe::App for Beatd {
                                         ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
                                             palette.widget_bg;
                                         field_label(ui, "Mode");
-                                        mode_combo(ui, ("mode", i), &mut band.mode, input_width);
-                                        ui.end_row();
-                                        field_label(ui, "Low");
-                                        ui.add_sized(
-                                            [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.low)
-                                                .range(0.0..=20000.0),
-                                        );
-                                        ui.end_row();
-                                        field_label(ui, "High");
-                                        ui.add_sized(
-                                            [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.high)
-                                                .range(band.low + 1.0..=24000.0),
-                                        );
-                                        ui.end_row();
-                                        field_label(ui, "Gain");
-                                        ui.add_sized(
-                                            [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.gain)
-                                                .range(0.1..=20.0)
-                                                .speed(0.1),
+                                        mode_combo(
+                                            ui,
+                                            "mode_level",
+                                            &mut self.level_channel.mode,
+                                            input_width,
                                         );
                                         ui.end_row();
                                         field_label(ui, "On delay");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.on_delay)
+                                            egui::DragValue::new(&mut self.level_channel.on_delay)
                                                 .range(0.0..=10.0)
                                                 .speed(0.01)
                                                 .max_decimals(2)
@@ -1294,7 +1496,7 @@ impl eframe::App for Beatd {
                                         field_label(ui, "Off delay");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.off_delay)
+                                            egui::DragValue::new(&mut self.level_channel.off_delay)
                                                 .range(0.0..=10.0)
                                                 .speed(0.01)
                                                 .max_decimals(2)
@@ -1304,26 +1506,32 @@ impl eframe::App for Beatd {
                                         field_label(ui, "Decay");
                                         ui.add_sized(
                                             [input_width, ui.spacing().interact_size.y],
-                                            egui::DragValue::new(&mut band.decay)
+                                            egui::DragValue::new(&mut self.level_channel.decay)
                                                 .range(0.0..=30.0)
                                                 .speed(0.1)
                                                 .max_decimals(1)
                                                 .suffix(" s"),
                                         );
                                         ui.end_row();
+                                        for _ in 0..3 {
+                                            ui.label(" ");
+                                            ui.end_row();
+                                        }
                                         ui.allocate_space(egui::vec2(1.0, 4.0));
                                         ui.end_row();
                                         field_label(ui, "Output");
                                         ui.end_row();
                                         field_label(ui, "OSC");
-                                        let previous = band.address.clone();
+                                        let previous = self.level_channel.address.clone();
                                         if ui
                                             .add(
-                                                egui::TextEdit::singleline(&mut band.address)
-                                                    .desired_width(input_width),
+                                                egui::TextEdit::singleline(
+                                                    &mut self.level_channel.address,
+                                                )
+                                                .desired_width(input_width),
                                             )
                                             .changed()
-                                            && band.active
+                                            && self.level_channel.active
                                             && self.osc_enabled
                                             && !previous.trim().is_empty()
                                         {
@@ -1347,184 +1555,8 @@ impl eframe::App for Beatd {
                                         ui.end_row();
                                     });
                             });
-                    }
-                    egui::Frame::new()
-                        .fill(palette.frame)
-                        .inner_margin(10.0)
-                        .show(&mut columns[4], |ui| {
-                            ui.horizontal(|ui| {
-                                ui.heading(
-                                    egui::RichText::new("Level").color(palette.level).strong(),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(14.0, 14.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.painter().circle_filled(
-                                            rect.center(),
-                                            6.0,
-                                            if self.level_channel.active {
-                                                palette.level
-                                            } else {
-                                                palette.dot_inactive
-                                            },
-                                        );
-                                    },
-                                );
-                            });
-                            ui.add_space(12.0);
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(24.0, 160.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 3.0, palette.meter_bg);
-                            let height = ((20.0 * self.analyzer.level().max(0.00001).log10()
-                                + 100.0)
-                                / 100.0)
-                                .clamp(0.0, 1.0);
-                            let fill = egui::Rect::from_min_max(
-                                egui::pos2(rect.left(), rect.bottom() - rect.height() * height),
-                                rect.right_bottom(),
-                            );
-                            ui.painter().rect_filled(fill, 3.0, palette.level);
-                            let threshold = &mut self.level_channel.threshold;
-                            let y = rect.bottom()
-                                - rect.height()
-                                    * ((20.0 * threshold.max(0.00001).log10() + 100.0) / 100.0)
-                                        .clamp(0.0, 1.0);
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(rect.left() - 5.0, y),
-                                    egui::pos2(rect.right() + 5.0, y),
-                                ],
-                                egui::Stroke::new(
-                                    2.0_f32,
-                                    if self.level_channel.active {
-                                        palette.threshold_active
-                                    } else {
-                                        palette.threshold_inactive
-                                    },
-                                ),
-                            );
-                            let handle = egui::Rect::from_center_size(
-                                egui::pos2(rect.center().x, y),
-                                egui::vec2(34.0, 14.0),
-                            );
-                            if ui
-                                .interact(
-                                    handle,
-                                    ui.id().with("level_threshold"),
-                                    egui::Sense::drag(),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::ResizeVertical)
-                                .dragged()
-                            {
-                                *threshold = (*threshold
-                                    * 10.0_f32.powf(
-                                        -5.0 * ui.input(|input| input.pointer.delta().y)
-                                            / rect.height(),
-                                    ))
-                                .clamp(0.00001, 1.0);
-                            }
-                            ui.add_space(10.0);
-                            ui.label(egui::RichText::new("Parameters").strong());
-                            let input_width = (ui.available_width() - 80.0).max(40.0);
-                            egui::Grid::new("level_settings")
-                                .min_col_width(72.0)
-                                .num_columns(2)
-                                .show(ui, |ui| {
-                                    ui.visuals_mut().extreme_bg_color = palette.widget_bg;
-                                    ui.visuals_mut().widgets.inactive.bg_fill = palette.widget_bg;
-                                    ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                        palette.widget_bg;
-                                    ui.visuals_mut().widgets.hovered.weak_bg_fill =
-                                        palette.widget_bg;
-                                    ui.visuals_mut().widgets.active.weak_bg_fill =
-                                        palette.widget_bg;
-                                    ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
-                                        palette.widget_bg;
-                                    field_label(ui, "Mode");
-                                    mode_combo(
-                                        ui,
-                                        "mode_level",
-                                        &mut self.level_channel.mode,
-                                        input_width,
-                                    );
-                                    ui.end_row();
-                                    field_label(ui, "On delay");
-                                    ui.add_sized(
-                                        [input_width, ui.spacing().interact_size.y],
-                                        egui::DragValue::new(&mut self.level_channel.on_delay)
-                                            .range(0.0..=10.0)
-                                            .speed(0.01)
-                                            .max_decimals(2)
-                                            .suffix(" s"),
-                                    );
-                                    ui.end_row();
-                                    field_label(ui, "Off delay");
-                                    ui.add_sized(
-                                        [input_width, ui.spacing().interact_size.y],
-                                        egui::DragValue::new(&mut self.level_channel.off_delay)
-                                            .range(0.0..=10.0)
-                                            .speed(0.01)
-                                            .max_decimals(2)
-                                            .suffix(" s"),
-                                    );
-                                    ui.end_row();
-                                    field_label(ui, "Decay");
-                                    ui.add_sized(
-                                        [input_width, ui.spacing().interact_size.y],
-                                        egui::DragValue::new(&mut self.level_channel.decay)
-                                            .range(0.0..=30.0)
-                                            .speed(0.1)
-                                            .max_decimals(1)
-                                            .suffix(" s"),
-                                    );
-                                    ui.end_row();
-                                    for _ in 0..3 {
-                                        ui.label(" ");
-                                        ui.end_row();
-                                    }
-                                    ui.allocate_space(egui::vec2(1.0, 4.0));
-                                    ui.end_row();
-                                    field_label(ui, "Output");
-                                    ui.end_row();
-                                    field_label(ui, "OSC");
-                                    let previous = self.level_channel.address.clone();
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(
-                                                &mut self.level_channel.address,
-                                            )
-                                            .desired_width(input_width),
-                                        )
-                                        .changed()
-                                        && self.level_channel.active
-                                        && self.osc_enabled
-                                        && !previous.trim().is_empty()
-                                    {
-                                        if let (Some(socket), Ok(data)) = (
-                                            &self.socket,
-                                            rosc::encoder::encode(&OscPacket::Message(
-                                                OscMessage {
-                                                    addr: previous,
-                                                    args: vec![OscType::Float(0.0)],
-                                                },
-                                            )),
-                                        ) {
-                                            if let Err(e) = socket.send_to(
-                                                &data,
-                                                (self.destination.as_str(), self.osc_port),
-                                            ) {
-                                                self.status = format!("OSC: {e}");
-                                            }
-                                        }
-                                    }
-                                    ui.end_row();
-                                });
-                        });
-                });
+                    });
+                }
             });
         });
     }
