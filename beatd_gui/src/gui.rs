@@ -237,13 +237,15 @@ fn preset_path(slot: usize) -> std::path::PathBuf {
     preset_dir().join(format!("preset-{slot}.json"))
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Band {
     low: f32,
     high: f32,
     threshold: f32,
     gain: f32,
+    #[serde(skip)]
     level: f32,
+    #[serde(skip)]
     active: bool,
     address: String,
     #[serde(default)]
@@ -257,6 +259,59 @@ struct Band {
     #[serde(skip)]
     trigger: Trigger,
 }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Preset {
+    bands: [Band; 4],
+    level_channel: Band,
+    gain: f32,
+    compressor: f32,
+    osc_enabled: bool,
+    destination: String,
+    osc_port: u16,
+    waveform_address: String,
+    spectrum_address: String,
+    bpm_detect: bool,
+    bpm_address: String,
+    bpm_range_min: f32,
+    show_waveform: bool,
+    show_spectrum: bool,
+    show_channels: bool,
+    show_bands: bool,
+    show_channel: [bool; 5],
+    device_name: Option<String>,
+}
+
+fn valid_preset(preset: &Preset) -> bool {
+    preset
+        .bands
+        .iter()
+        .chain(std::iter::once(&preset.level_channel))
+        .all(|b| {
+            b.low.is_finite()
+                && b.high.is_finite()
+                && b.low >= 0.0
+                && b.low < b.high
+                && b.high <= 24000.0
+                && (0.000001..=1.0).contains(&b.threshold)
+                && (0.1..=20.0).contains(&b.gain)
+                && (0.0..=10.0).contains(&b.on_delay)
+                && (0.0..=10.0).contains(&b.off_delay)
+                && (0.0..=30.0).contains(&b.decay)
+                && b.address.starts_with('/')
+        })
+        && (0.1..=10.0).contains(&preset.gain)
+        && (0.2..=3.0).contains(&preset.compressor)
+        && preset.osc_port != 0
+        && (preset.bpm_range_min == 0.0 || (25.0..=300.0).contains(&preset.bpm_range_min))
+        && [
+            &preset.waveform_address,
+            &preset.spectrum_address,
+            &preset.bpm_address,
+        ]
+        .iter()
+        .all(|address| address.is_empty() || address.starts_with('/'))
+}
+
 impl Band {
     fn new(i: usize) -> Self {
         Self {
@@ -370,12 +425,29 @@ impl Beatd {
     fn save_settings(&mut self, slot: usize) {
         let path = preset_path(slot);
         let tmp = path.with_extension("json.tmp");
+        let preset = Preset {
+            bands: self.bands.clone(),
+            level_channel: self.level_channel.clone(),
+            gain: self.gain,
+            compressor: self.compressor,
+            osc_enabled: self.osc_enabled,
+            destination: self.destination.clone(),
+            osc_port: self.osc_port,
+            waveform_address: self.waveform_address.clone(),
+            spectrum_address: self.spectrum_address.clone(),
+            bpm_detect: self.bpm_detect,
+            bpm_address: self.bpm_address.clone(),
+            bpm_range_min: self.analyzer.bpm_range_min(),
+            show_waveform: self.show_waveform,
+            show_spectrum: self.show_spectrum,
+            show_channels: self.show_channels,
+            show_bands: self.show_bands,
+            show_channel: self.show_channel,
+            device_name: self.device_names.get(self.device).cloned(),
+        };
         let result = std::fs::create_dir_all(preset_dir())
             .map_err(|e| e.to_string())
-            .and_then(|_| {
-                serde_json::to_vec_pretty(&(&self.bands, &self.level_channel))
-                    .map_err(|e| e.to_string())
-            })
+            .and_then(|_| serde_json::to_vec_pretty(&preset).map_err(|e| e.to_string()))
             .and_then(|data| std::fs::write(&tmp, data).map_err(|e| e.to_string()))
             .and_then(|_| {
                 if cfg!(windows) {
@@ -388,41 +460,83 @@ impl Beatd {
     fn load_settings(&mut self, slot: usize) {
         let result = std::fs::read(preset_path(slot))
             .map_err(|e| e.to_string())
-            .and_then(|data| {
-                serde_json::from_slice::<([Band; 4], Band)>(&data).map_err(|e| e.to_string())
-            });
+            .and_then(|data| serde_json::from_slice::<Preset>(&data).map_err(|e| e.to_string()));
         match result {
-            Ok((mut bands, mut level))
-                if bands.iter().chain(std::iter::once(&level)).all(|b| {
-                    b.low.is_finite()
-                        && b.high.is_finite()
-                        && b.low >= 0.0
-                        && b.low < b.high
-                        && b.high <= 24000.0
-                        && (0.000001..=1.0).contains(&b.threshold)
-                        && (0.1..=20.0).contains(&b.gain)
-                        && (0.0..=10.0).contains(&b.on_delay)
-                        && (0.0..=10.0).contains(&b.off_delay)
-                        && (0.0..=30.0).contains(&b.decay)
-                        && b.address.starts_with('/')
-                }) =>
-            {
-                self.release_notes();
-                for band in &mut bands {
-                    band.active = false;
-                    band.level = 0.0;
-                    band.trigger.reset();
-                }
-                self.bands = bands;
-                level.active = false;
-                level.level = 0.0;
-                level.trigger.reset();
-                self.level_channel = level;
+            Ok(preset) if valid_preset(&preset) => {
+                self.apply_preset(preset);
                 self.status = format!("Loaded preset {slot}");
             }
-            Ok(_) => self.status = "Invalid band settings".into(),
+            Ok(_) => self.status = "Invalid preset settings".into(),
             Err(e) => self.status = e,
         }
+    }
+    fn apply_preset(&mut self, preset: Preset) {
+        self.release_notes();
+        self.bands = preset.bands;
+        for band in &mut self.bands {
+            band.active = false;
+            band.level = 0.0;
+            band.trigger.reset();
+        }
+        self.level_channel = preset.level_channel;
+        self.level_channel.active = false;
+        self.level_channel.level = 0.0;
+        self.level_channel.trigger.reset();
+        self.gain = preset.gain;
+        self.compressor = preset.compressor;
+        self.osc_enabled = preset.osc_enabled;
+        self.destination = preset.destination;
+        self.osc_port = preset.osc_port;
+        self.waveform_address = preset.waveform_address;
+        self.spectrum_address = preset.spectrum_address;
+        self.bpm_detect = preset.bpm_detect;
+        self.bpm_address = preset.bpm_address;
+        self.bpm = 0.0;
+        self.last_beat = None;
+        self.bpm_beat_age = f32::INFINITY;
+        self.analyzer.set_bpm_range_min(preset.bpm_range_min);
+        self.analyzer.set_bpm_enabled(preset.bpm_detect);
+        self.show_waveform = preset.show_waveform;
+        self.show_spectrum = preset.show_spectrum;
+        self.show_channels = preset.show_channels;
+        self.show_bands = preset.show_bands;
+        self.show_channel = preset.show_channel;
+        if let Some(name) = preset.device_name {
+            if let Some(index) = self.device_names.iter().position(|n| *n == name) {
+                if index != self.device {
+                    self.device = index;
+                    if self.stream.is_some() {
+                        self.stream = None;
+                        self.rx = None;
+                        self.status = match self.start() {
+                            Ok(()) => "Audio running".into(),
+                            Err(e) => format!("Audio: {e}"),
+                        };
+                    }
+                }
+            }
+        }
+    }
+    fn reset_settings(&mut self) {
+        self.release_notes();
+        self.bands = std::array::from_fn(Band::new);
+        self.level_channel = Band {
+            address: "/beatd/level".into(),
+            gain: 1.0,
+            ..Band::new(0)
+        };
+        self.gain = 1.0;
+        self.compressor = 1.0;
+        self.bpm = 0.0;
+        self.bpm_detect = true;
+        self.bpm_address = "/beatd/bpm".into();
+        self.waveform_address = "/beatd/waveform".into();
+        self.spectrum_address = "/beatd/spectrum".into();
+        self.last_beat = None;
+        self.bpm_beat_age = f32::INFINITY;
+        self.analyzer.set_bpm_range_min(0.0);
+        self.analyzer.set_bpm_enabled(true);
+        self.status = "Reset settings".into();
     }
     fn refresh_devices(&mut self) {
         match cpal::default_host().input_devices() {
@@ -939,6 +1053,15 @@ impl eframe::App for Beatd {
                                     },
                                 );
                             });
+                        }
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), ui.spacing().interact_size.y],
+                                egui::Button::new("Reset"),
+                            )
+                            .clicked()
+                        {
+                            self.reset_settings();
                         }
                     });
             });
@@ -1630,6 +1753,43 @@ pub fn run() -> eframe::Result {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn preset_round_trip_keeps_all_settings() {
+        let preset = Preset {
+            bands: std::array::from_fn(Band::new),
+            level_channel: Band {
+                address: "/beatd/level".into(),
+                gain: 1.0,
+                ..Band::new(0)
+            },
+            gain: 2.0,
+            compressor: 1.5,
+            osc_enabled: true,
+            destination: "192.168.0.10".into(),
+            osc_port: 9000,
+            waveform_address: "/beatd/waveform".into(),
+            spectrum_address: "/beatd/spectrum".into(),
+            bpm_detect: false,
+            bpm_address: "/beatd/bpm".into(),
+            bpm_range_min: 75.0,
+            show_waveform: false,
+            show_spectrum: true,
+            show_channels: false,
+            show_bands: false,
+            show_channel: [true, false, true, false, true],
+            device_name: Some("Test input".into()),
+        };
+        let value = serde_json::to_value(&preset).unwrap();
+        assert!(value["bands"][0].get("level").is_none());
+        assert!(value["bands"][0].get("active").is_none());
+        let restored: Preset = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(value, serde_json::to_value(&restored).unwrap());
+        assert!(valid_preset(&restored));
+        let mut invalid = restored;
+        invalid.gain = 0.0;
+        assert!(!valid_preset(&invalid));
+    }
 
     #[test]
     fn trigger_applies_on_and_off_delays() {
