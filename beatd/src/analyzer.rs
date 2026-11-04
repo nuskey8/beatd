@@ -1,19 +1,38 @@
 use crate::bpm_detector::BpmDetector;
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, OnceLock},
+};
 
 /// Number of samples in the spectrum analysis window.
 pub const FFT_SIZE: usize = 2048;
 
+pub(crate) fn hann_window() -> &'static [f32; FFT_SIZE] {
+    static WINDOW: OnceLock<[f32; FFT_SIZE]> = OnceLock::new();
+    WINDOW.get_or_init(|| {
+        std::array::from_fn(|i| {
+            0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (FFT_SIZE - 1) as f32).cos()
+        })
+    })
+}
+
+pub(crate) fn fft_plan() -> Arc<dyn Fft<f32>> {
+    static FFT: OnceLock<Arc<dyn Fft<f32>>> = OnceLock::new();
+    Arc::clone(FFT.get_or_init(|| FftPlanner::new().plan_fft_forward(FFT_SIZE)))
+}
+
 /// Streaming analysis of mono audio sampled at a fixed rate.
 pub struct Analyzer {
     rate: u32,
-    samples: Vec<f32>,
+    sample_count: usize,
     waveform: VecDeque<f32>,
     wave_peak: f32,
     wave_count: usize,
     fft: Arc<dyn Fft<f32>>,
     spectrum: Vec<f32>,
+    fft_buffer: Vec<Complex<f32>>,
+    fft_scratch: Vec<Complex<f32>>,
     level: f32,
     bpm_detector: BpmDetector,
     bpm: f32,
@@ -26,13 +45,17 @@ impl Analyzer {
     /// Creates new analyzer. Sample rate must be at least 100 Hz.
     pub fn new(sample_rate: u32) -> Self {
         assert!(sample_rate >= 100, "sample rate must be at least 100 Hz");
+        let fft = fft_plan();
+        let fft_scratch = vec![Complex::default(); fft.get_inplace_scratch_len()];
         Self {
             rate: sample_rate,
-            samples: Vec::new(),
+            sample_count: 0,
             waveform: VecDeque::new(),
             wave_peak: 0.0,
             wave_count: 0,
-            fft: FftPlanner::new().plan_fft_forward(FFT_SIZE),
+            fft,
+            fft_scratch,
+            fft_buffer: vec![Complex::default(); FFT_SIZE],
             spectrum: Vec::new(),
             level: 0.0,
             bpm_detector: BpmDetector::default(),
@@ -45,6 +68,7 @@ impl Analyzer {
 
     /// Adds mono samples. Returns true when a new spectrum is available.
     pub fn push(&mut self, samples: &[f32]) -> bool {
+        let window = hann_window();
         let mut updated = false;
         for &sample in samples {
             let sample = if sample.is_finite() { sample } else { 0.0 };
@@ -63,36 +87,27 @@ impl Analyzer {
                 self.wave_peak = 0.0;
                 self.wave_count = 0;
             }
-            self.samples.push(sample);
-            if self.samples.len() == FFT_SIZE {
-                self.level =
-                    (self.samples.iter().map(|s| s * s).sum::<f32>() / FFT_SIZE as f32).sqrt();
-                let mut buffer: Vec<_> = self
-                    .samples
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        Complex::new(
-                            *s * (0.5
-                                - 0.5
-                                    * (std::f32::consts::TAU * i as f32 / (FFT_SIZE - 1) as f32)
-                                        .cos()),
-                            0.0,
-                        )
-                    })
-                    .collect();
-                self.fft.process(&mut buffer);
+            self.fft_buffer[self.sample_count] = Complex::new(sample, 0.0);
+            self.sample_count += 1;
+            if self.sample_count == FFT_SIZE {
+                self.level = (self.fft_buffer.iter().map(|v| v.re * v.re).sum::<f32>()
+                    / FFT_SIZE as f32)
+                    .sqrt();
+                for (value, window) in self.fft_buffer.iter_mut().zip(window) {
+                    value.re *= window;
+                }
+                self.fft
+                    .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
                 let gain = self.spectrum_gain;
                 let exponent = 1.0 / self.spectrum_compression.max(0.01);
-                self.spectrum = buffer[..FFT_SIZE / 2]
-                    .iter()
-                    .map(|c| {
+                self.spectrum.clear();
+                self.spectrum
+                    .extend(self.fft_buffer[..FFT_SIZE / 2].iter().map(|c| {
                         (c.norm() * 4.0 / FFT_SIZE as f32 * gain)
                             .clamp(0.0, 1.0)
                             .powf(exponent)
-                    })
-                    .collect();
-                self.samples.clear();
+                    }));
+                self.sample_count = 0;
                 updated = true;
             }
         }
