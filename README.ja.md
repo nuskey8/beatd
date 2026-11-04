@@ -84,11 +84,11 @@ beatd_free(analyzer);
 npmからライブラリを追加します。
 
 ```sh
-npm i beatd
+npm i beatd-js
 ```
 
 ```js
-import { createAnalyzer } from "beatd";
+import { createAnalyzer } from "beatd-js";
 
 using analyzer = createAnalyzer({ sampleRate: 48000 });
 
