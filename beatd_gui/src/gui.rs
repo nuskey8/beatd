@@ -424,6 +424,27 @@ impl Beatd {
             Err(e) => self.status = e,
         }
     }
+    fn reset_settings(&mut self) {
+        self.release_notes();
+        self.bands = std::array::from_fn(Band::new);
+        self.level_channel = Band {
+            address: "/beatd/level".into(),
+            gain: 1.0,
+            ..Band::new(0)
+        };
+        self.gain = 1.0;
+        self.compressor = 1.0;
+        self.bpm = 0.0;
+        self.bpm_detect = true;
+        self.bpm_address = "/beatd/bpm".into();
+        self.waveform_address = "/beatd/waveform".into();
+        self.spectrum_address = "/beatd/spectrum".into();
+        self.last_beat = None;
+        self.bpm_beat_age = f32::INFINITY;
+        self.analyzer.set_bpm_range_min(0.0);
+        self.analyzer.set_bpm_enabled(true);
+        self.status = "Reset settings".into();
+    }
     fn refresh_devices(&mut self) {
         match cpal::default_host().input_devices() {
             Ok(devices) => {
@@ -939,6 +960,15 @@ impl eframe::App for Beatd {
                                     },
                                 );
                             });
+                        }
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), ui.spacing().interact_size.y],
+                                egui::Button::new("Reset"),
+                            )
+                            .clicked()
+                        {
+                            self.reset_settings();
                         }
                     });
             });
