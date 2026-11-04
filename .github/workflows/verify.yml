@@ -1,0 +1,27 @@
+name: Verify
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Version without the v prefix
+        value: ${{ jobs.verify.outputs.version }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check package versions
+        id: check
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python3 .github/scripts/check_version.py "$TAG"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"

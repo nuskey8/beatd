@@ -1,0 +1,45 @@
+name: Create release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      run_id:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+      run_id:
+        description: Run ID of the workflow that built the desktop artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version
+        run: python3 .github/scripts/check_version.py "v${{ inputs.version }}"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: beatd-*
+          path: dist
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          files: dist/*
+          generate_release_notes: true

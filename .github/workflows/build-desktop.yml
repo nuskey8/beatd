@@ -1,0 +1,85 @@
+name: Build desktop
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio and window dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev libx11-dev libxi-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        run: |
+          mkdir -p dist/beatd-linux-x86_64
+          cp target/release/beatd dist/beatd-linux-x86_64/
+          cp README.md icon.png dist/beatd-linux-x86_64/
+          tar -czf dist/beatd-linux-x86_64.tar.gz -C dist beatd-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-linux-x86_64
+          path: dist/beatd-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/beatd-windows-x86_64 | Out-Null
+          Copy-Item target/release/beatd.exe dist/beatd-windows-x86_64/
+          Copy-Item README.md, icon.png dist/beatd-windows-x86_64/
+          Compress-Archive -Path dist/beatd-windows-x86_64/* -DestinationPath dist/beatd-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-windows-x86_64
+          path: dist/beatd-windows-x86_64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --package beatd_gui --target aarch64-apple-darwin
+      - run: cargo build --release --locked --package beatd_gui --target x86_64-apple-darwin
+      - name: Package
+        run: |
+          VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          mkdir -p icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z "$size" "$size" icon.png --out "icon.iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z "$((size * 2))" "$((size * 2))" icon.png --out "icon.iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns icon.iconset -o icon.icns
+
+          APP=dist/beatd.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create \
+            -output "$APP/Contents/MacOS/beatd" \
+            target/aarch64-apple-darwin/release/beatd \
+            target/x86_64-apple-darwin/release/beatd
+          cp icon.icns "$APP/Contents/Resources/icon.icns"
+          sed "s/__VERSION__/${VERSION}/g" .github/macos/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" dist/beatd-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-macos-universal
+          path: dist/beatd-macos-universal.zip
