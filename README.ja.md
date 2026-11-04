@@ -29,6 +29,20 @@ beatdはストリーミング音声解析のためのクロスプラットフォ
 
 GitHubの[Releases](https://github.com/nuskey8/beatd/releases/latest)から最新のリリースを選択し、該当するOSの実行ファイルをダウンロードします。
 
+### macOS
+
+macOS版はApple Developer IDによる署名・公証を行っていないため、初回起動時に「開発元を確認できないため開けません」などと表示されることがあります。
+
+開くには、以下のいずれかを行ってください。
+
+1. `beatd.app` を右クリック(またはControlキーを押しながらクリック)し、「開く」を選んでもう一度「開く」をクリックする
+2. 一度起動を試したあと、**システム設定 → プライバシーとセキュリティ** から「このまま開く」を選ぶ
+3. ターミナルでquarantine属性を削除する
+
+```sh
+xattr -dr com.apple.quarantine /Applications/beatd.app
+```
+
 ## libbeatd
 
 beatdのストリーミング音声解析は独立したcrateとしてRustで実装されています。これを組み込むことで、BPM解析などをアプリケーション内で利用することが可能です。

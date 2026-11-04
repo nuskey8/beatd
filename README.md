@@ -29,6 +29,20 @@ Additionally, the core analysis engine is provided as an independent library so 
 
 Select the latest release from GitHub [Releases](https://github.com/nuskey8/beatd/releases/latest) and download the executable file for your operating system.
 
+### macOS
+
+The macOS build is not signed or notarized with an Apple Developer ID. On first launch, macOS may show a message such as "beatd cannot be opened because the developer cannot be verified."
+
+To open it anyway:
+
+1. Right-click (or Control-click) `beatd.app`, choose **Open**, then click **Open** again.
+2. Or allow it from **System Settings → Privacy & Security** after trying to open it once.
+3. Or remove the quarantine attribute in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/beatd.app
+```
+
 ## libbeatd
 
 The streaming audio analysis in beatd is implemented in Rust as an independent crate. By embedding this, you can use features such as BPM analysis within your applications.
