@@ -9,7 +9,7 @@
 
 [English](README.md) | 日本語
 
-GUI application and library for streaming audio analysis and OSC conversion.
+A cross-platform GUI application and library for analyzing streaming audio and converting it to OSC.
 
 ![hero](assets/hero.png)
 

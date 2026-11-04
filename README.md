@@ -9,7 +9,7 @@
 
 English | [日本語](https://github.com/nuskey8/beatd/blob/main/README.ja.md)
 
-GUI application and library for streaming audio analysis and OSC conversion.
+A cross-platform GUI application and library for analyzing streaming audio and converting it to OSC.
 
 ![hero](https://raw.githubusercontent.com/nuskey8/beatd/main/assets/hero.png)
 
