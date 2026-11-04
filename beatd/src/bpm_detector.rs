@@ -37,6 +37,74 @@ impl Default for BpmDetector {
     }
 }
 
+// Score onset sequences with 30 ms tolerance and at most one missing beat.
+fn beat_string(values: &[f32], rate: f32, min_lag: usize, max_lag: usize) -> Option<f32> {
+    let threshold = (values.iter().map(|v| v * v).sum::<f32>()).sqrt() * 0.008;
+    let onsets: Vec<_> = (5..values.len().saturating_sub(5))
+        .filter(|&i| {
+            values[i] > threshold
+                && values[i - 5..i].iter().all(|&v| v < values[i])
+                && values[i + 1..=i + 5].iter().all(|&v| v <= values[i])
+        })
+        .collect();
+    let tolerance = 0.030 * rate / HOP as f32;
+    let mut best = None;
+    let mut best_score = 0.0;
+    for (index, &start) in onsets.iter().enumerate() {
+        for &second in &onsets[index + 1..] {
+            let mut period = (second - start) as f32;
+            if period < min_lag as f32 {
+                continue;
+            }
+            if period > max_lag as f32 {
+                break;
+            }
+            let mut last = second;
+            let mut count = 2;
+            let mut intervals = 1;
+            let mut score = values[start].min(values[second]);
+            let mut skipped = false;
+            let mut step = 1;
+            loop {
+                let target = last as f32 + period * step as f32;
+                let first = onsets.partition_point(|&i| (i as f32) < target - tolerance);
+                let next = onsets[first..]
+                    .iter()
+                    .copied()
+                    .take_while(|&i| i as f32 <= target + tolerance)
+                    .filter(|&i| i > last)
+                    .max_by(|&a, &b| values[a].total_cmp(&values[b]));
+                if let Some(next) = next {
+                    period = (period * intervals as f32 + (next - last) as f32)
+                        / (intervals + step) as f32;
+                    intervals += step;
+                    score += values[last].min(values[next]);
+                    last = next;
+                    count += 1;
+                    step = 1;
+                } else if !skipped && target + tolerance < values.len() as f32 {
+                    skipped = true;
+                    step = 2;
+                } else {
+                    break;
+                }
+            }
+            if count < 4 {
+                continue;
+            }
+            let bpm = 60.0 * rate / (period * HOP as f32);
+            let prior = (-0.5 * (bpm / 140.0).ln().powi(2) / 0.8_f32.powi(2)).exp();
+            // Keep evidence from longer strings without rewarding every fast subdivision.
+            let score = score / ((count - 1) as f32).sqrt();
+            if score * prior > best_score {
+                best_score = score * prior;
+                best = Some(period);
+            }
+        }
+    }
+    best
+}
+
 impl BpmDetector {
     pub fn beat_offsets(&self, bpm: f32, rate: f32) -> Vec<f32> {
         if !bpm.is_finite() || bpm <= 0.0 || self.flux.len() < 4 {
@@ -88,7 +156,8 @@ impl BpmDetector {
             .process_with_scratch(&mut self.buffer, &mut self.scratch);
         let mut flux = 0.0;
         for (bin, previous) in self.buffer.iter().zip(&mut self.previous) {
-            let magnitude = bin.norm();
+            // Compress strong tonal bins so quiet rhythmic onsets still contribute.
+            let magnitude = bin.norm().sqrt();
             flux += (magnitude - *previous).max(0.0);
             *previous = magnitude;
         }
@@ -115,53 +184,11 @@ impl BpmDetector {
         };
         let min_lag = (60.0 * rate / (max_bpm * HOP as f32)).ceil() as usize;
         let max_lag = (60.0 * rate / (min_bpm * HOP as f32)).floor() as usize;
-        let correlation = |lag: usize| -> f32 {
-            if lag >= values.len() {
-                return 0.0;
-            }
-            let (mut dot, mut a, mut b) = (0.0, 0.0, 0.0);
-            for i in lag..values.len() {
-                dot += values[i] * values[i - lag];
-                a += values[i] * values[i];
-                b += values[i - lag] * values[i - lag];
-            }
-            dot / (a * b).sqrt().max(1e-12)
-        };
-        let score_at = |lag: usize| correlation(lag) + 0.25 * correlation(lag * 2);
-        let (lag, score) = (min_lag..=max_lag)
-            .map(|lag| (lag, score_at(lag)))
-            .max_by(|a, b| a.1.total_cmp(&b.1))?;
-        if score < 0.2 {
+        let Some(period) = beat_string(&values, rate, min_lag, max_lag) else {
             self.candidates.clear();
             return Some(0.0);
-        }
-        // Prefer a shorter submultiple when it scores nearly as well,
-        // so wide ranges do not settle on a slow multiple of the beat.
-        let mut lag = lag;
-        for divisor in 2..=4 {
-            let center = lag as f32 / divisor as f32;
-            let lo = (center - 2.0).round() as usize;
-            let hi = (center + 2.0).round() as usize;
-            if hi < min_lag {
-                break;
-            }
-            if let Some(candidate) = (lo.max(min_lag)..=hi.min(max_lag))
-                .max_by(|a, b| score_at(*a).total_cmp(&score_at(*b)))
-            {
-                if score_at(candidate) >= score * 0.85 {
-                    lag = candidate;
-                    break;
-                }
-            }
-        }
-        let (left, center, right) = (correlation(lag - 1), correlation(lag), correlation(lag + 1));
-        let denominator = left - 2.0 * center + right;
-        let offset = if denominator.abs() > 1e-6 {
-            (0.5 * (left - right) / denominator).clamp(-0.5, 0.5)
-        } else {
-            0.0
         };
-        let bpm = 60.0 * rate / ((lag as f32 + offset) * HOP as f32);
+        let bpm = 60.0 * rate / (period * HOP as f32);
         self.candidates.push_back(bpm);
         if self.candidates.len() > 16 {
             self.candidates.pop_front();
@@ -192,6 +219,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn beat_strings_allow_one_missing_beat_and_small_jitter() {
+        let mut values = vec![0.0; 500];
+        for i in [20, 100, 181, 340, 421] {
+            values[i] = 1.0;
+        }
+        let period = beat_string(&values, 44100.0, 70, 90).unwrap();
+        assert!((period - 80.0).abs() < 1.0, "{period}");
+    }
+
+    #[test]
+    fn beat_strings_require_four_consistent_onsets() {
+        let mut values = vec![0.0; 500];
+        for i in [20, 100, 180] {
+            values[i] = 1.0;
+        }
+        assert!(beat_string(&values, 44100.0, 70, 90).is_none());
+        values[180] = 0.0;
+        values[220] = 1.0;
+        values[355] = 1.0;
+        assert!(beat_string(&values, 44100.0, 70, 90).is_none());
+    }
+
+    #[test]
+    fn flat_flux_is_not_a_string_of_onsets() {
+        assert!(beat_string(&vec![1.0; 860], 44100.0, 30, 300).is_none());
+    }
+
+    #[test]
     fn tracks_beats_over_continuous_tone_and_subdivisions() {
         for rate in [44100, 48000] {
             for bpm in [90.0, 120.0, 145.0] {
@@ -215,6 +270,26 @@ mod tests {
                     "{rate}: expected {bpm}, got {result}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn tracks_quiet_beats_under_loud_sustained_tone() {
+        let rate = 48000;
+        for bpm in [95.0, 123.5, 145.0] {
+            let mut detector = BpmDetector::default();
+            let mut result = 0.0;
+            for i in 0..rate * 12 {
+                let t = i as f32 / rate as f32;
+                let beat = (t % (60.0 / bpm)) / (60.0 / bpm);
+                let sample =
+                    0.7 * (1.0 + 0.3 * (t * 7.3).sin()) * (t * 440.0 * std::f32::consts::TAU).sin()
+                        + 0.003 * (-beat * 50.0).exp() * (t * 80.0 * std::f32::consts::TAU).sin();
+                if let Some(value) = detector.push(sample, rate as f32) {
+                    result = value;
+                }
+            }
+            assert!((result - bpm).abs() < 1.0, "expected {bpm}, got {result}");
         }
     }
 
