@@ -1,5 +1,12 @@
 # beatd
 
+[![CI](https://github.com/nuskey8/beatd/actions/workflows/ci.yml/badge.svg)](https://github.com/nuskey8/beatd/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nuskey8/beatd)](https://github.com/nuskey8/beatd/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/beatd)](https://crates.io/crates/beatd)
+[![npm](https://img.shields.io/npm/v/beatd-js)](https://www.npmjs.com/package/beatd-js)
+[![NuGet](https://img.shields.io/nuget/v/Beatd)](https://www.nuget.org/packages/Beatd)
+[![Unity](https://img.shields.io/badge/Unity-6000.0%2B-black?logo=unity)](https://github.com/nuskey8/beatd/tree/main/beatd-dotnet/Beatd.Unity/Packages/com.nuskey8.beatd.unity)
+
 [English](README.md) | 日本語
 
 GUI application and library for streaming audio analysis and OSC conversion.
