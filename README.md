@@ -151,12 +151,14 @@ float[] beats = analyzer.GetBeatOffsets(analyzer.Bpm);
 
 Please note that the .NET/Unity version currently supports only the following platforms:
 
-| Platform            | RID         | .NET (NuGet) | Unity |
-| :------------------ | :---------- | :----------: | :---: |
-| Windows x64         | `win-x64`   |      ✅      |  ✅   |
-| Linux x64           | `linux-x64` |      ✅      |  ✅   |
-| macOS Intel         | `osx-x64`   |      ✅      |  ✅   |
-| macOS Apple Silicon | `osx-arm64` |      ✅      |  ✅   |
+| Platform            | RID           | .NET (NuGet) | Unity |
+| :------------------ | :------------ | :----------: | :---: |
+| Windows x64         | `win-x64`     |      ✅      |  ✅   |
+| Windows ARM64       | `win-arm64`   |      ✅      |  ✅   |
+| Linux x64           | `linux-x64`   |      ✅      |  ✅   |
+| Linux ARM64         | `linux-arm64` |      ✅      |  ✅   |
+| macOS Intel         | `osx-x64`     |      ✅      |  ✅   |
+| macOS Apple Silicon | `osx-arm64`   |      ✅      |  ✅   |
 
 ## License
 

@@ -30,6 +30,28 @@ jobs:
           name: beatd-linux-x86_64
           path: dist/beatd-linux-x86_64.tar.gz
 
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio and window dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev libx11-dev libxi-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        run: |
+          mkdir -p dist/beatd-linux-arm64
+          cp target/release/beatd dist/beatd-linux-arm64/
+          cp README.md icon.png dist/beatd-linux-arm64/
+          tar -czf dist/beatd-linux-arm64.tar.gz -C dist beatd-linux-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-linux-arm64
+          path: dist/beatd-linux-arm64.tar.gz
+
   windows:
     runs-on: windows-latest
     steps:
@@ -48,6 +70,25 @@ jobs:
         with:
           name: beatd-windows-x86_64
           path: dist/beatd-windows-x86_64.zip
+
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --package beatd_gui
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/beatd-windows-arm64 | Out-Null
+          Copy-Item target/release/beatd.exe dist/beatd-windows-arm64/
+          Copy-Item README.md, icon.png dist/beatd-windows-arm64/
+          Compress-Archive -Path dist/beatd-windows-arm64/* -DestinationPath dist/beatd-windows-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beatd-windows-arm64
+          path: dist/beatd-windows-arm64.zip
 
   macos:
     runs-on: macos-latest
