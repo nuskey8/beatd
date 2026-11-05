@@ -29,9 +29,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
             rid: linux-x64
             file: libbeatd.so
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            rid: linux-arm64
+            file: libbeatd.so
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             rid: win-x64
+            file: beatd.dll
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            rid: win-arm64
             file: beatd.dll
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -70,7 +78,7 @@ jobs:
           path: native-artifacts
       - name: Place native libraries
         run: |
-          for rid in linux-x64 win-x64 osx-arm64 osx-x64; do
+          for rid in linux-x64 linux-arm64 win-x64 win-arm64 osx-arm64 osx-x64; do
             mkdir -p "beatd-dotnet/Beatd/runtimes/$rid/native"
             cp native-artifacts/"native-$rid"/* "beatd-dotnet/Beatd/runtimes/$rid/native/"
           done
