@@ -913,7 +913,7 @@ impl eframe::App for Beatd {
                                 .width(ui.available_width())
                                 .selected_text(selected_text)
                                 .show_ui(ui, |ui| {
-                                    for minimum in [0.0, 50.0, 75.0, 100.0, 150.0] {
+                                    for minimum in [0.0, 50.0, 75.0, 100.0, 128.0, 150.0] {
                                         let mut selected = self.analyzer.bpm_range_min();
                                         let label = if minimum == 0.0 {
                                             "Auto".to_owned()
