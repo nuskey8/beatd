@@ -331,6 +331,114 @@ impl Band {
     }
 }
 
+/// Formats the range `[min, 2 * min)`, or Auto when `min` is zero.
+fn bpm_range_text(min: f32) -> String {
+    if min == 0.0 {
+        "Auto".to_owned()
+    } else {
+        format!("{:.0}–{:.0} BPM", min, min * 2.0)
+    }
+}
+
+/// A range from the built-in list or `bpm-ranges.json`; cannot be edited.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FixedBpmRangePreset {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    min: f32,
+}
+
+impl FixedBpmRangePreset {
+    const fn new(min: f32) -> Self {
+        Self { name: None, min }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.min == 0.0 || (25.0..=300.0).contains(&self.min)
+    }
+
+    fn label(&self) -> String {
+        let range = bpm_range_text(self.min);
+        match &self.name {
+            Some(name) => format!("{name} ({range})"),
+            None => range,
+        }
+    }
+}
+
+/// The Custom entry, whose lower bound is edited from the GUI.
+#[derive(Clone, PartialEq)]
+struct EditableBpmRangePreset {
+    min: f32,
+}
+
+/// An entry of the BPM Range selector.
+#[derive(Clone, PartialEq)]
+enum BpmRangePreset {
+    Fixed(FixedBpmRangePreset),
+    Editable(EditableBpmRangePreset),
+}
+
+impl BpmRangePreset {
+    fn min(&self) -> f32 {
+        match self {
+            Self::Fixed(range) => range.min,
+            Self::Editable(range) => range.min,
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Fixed(range) => range.label(),
+            Self::Editable(range) => format!("Custom ({})", bpm_range_text(range.min)),
+        }
+    }
+}
+
+const BUILTIN_BPM_RANGES: [FixedBpmRangePreset; 5] = [
+    FixedBpmRangePreset::new(0.0),
+    FixedBpmRangePreset::new(50.0),
+    FixedBpmRangePreset::new(75.0),
+    FixedBpmRangePreset::new(100.0),
+    FixedBpmRangePreset::new(150.0),
+];
+
+fn bpm_ranges_path() -> std::path::PathBuf {
+    preset_dir().join("bpm-ranges.json")
+}
+
+/// Reads user-defined BPM ranges. A missing file means no user ranges.
+fn read_bpm_ranges() -> Result<Vec<FixedBpmRangePreset>, String> {
+    match std::fs::read(bpm_ranges_path()) {
+        Ok(data) => serde_json::from_slice(&data).map_err(|e| format!("bpm-ranges.json: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        Err(e) => Err(format!("bpm-ranges.json: {e}")),
+    }
+}
+
+/// Builds the list shown in the BPM Range selector from the built-in ranges and the
+/// ranges read from `bpm-ranges.json`, followed by the Custom entry.
+fn merge_bpm_ranges(
+    builtin: &[FixedBpmRangePreset],
+    loaded: Vec<FixedBpmRangePreset>,
+) -> Vec<BpmRangePreset> {
+    let mut fixed: Vec<FixedBpmRangePreset> = vec![];
+    // User ranges come first so they win over a built-in range with the same `min`.
+    for range in loaded.into_iter().chain(builtin.iter().cloned()) {
+        if range.is_valid() && !fixed.iter().any(|r| r.min == range.min) {
+            fixed.push(range);
+        }
+    }
+    fixed.sort_by(|a, b| a.min.total_cmp(&b.min));
+    fixed
+        .into_iter()
+        .map(BpmRangePreset::Fixed)
+        .chain(std::iter::once(BpmRangePreset::Editable(
+            EditableBpmRangePreset { min: 120.0 },
+        )))
+        .collect()
+}
+
 struct Beatd {
     devices: Vec<cpal::Device>,
     device_names: Vec<String>,
@@ -352,6 +460,9 @@ struct Beatd {
     bpm_detect: bool,
     bpm_address: String,
     bpm_beat_age: f32,
+    bpm_ranges: Vec<BpmRangePreset>,
+    /// Index of the selected entry in `bpm_ranges`.
+    bpm_range: usize,
     gain: f32,
     compressor: f32,
     show_waveform: bool,
@@ -388,6 +499,8 @@ impl Default for Beatd {
             bpm_detect: true,
             bpm_address: "/beatd/bpm".into(),
             bpm_beat_age: f32::INFINITY,
+            bpm_ranges: merge_bpm_ranges(&BUILTIN_BPM_RANGES, vec![]),
+            bpm_range: 0,
             gain: 1.0,
             compressor: 1.0,
             show_waveform: true,
@@ -409,6 +522,11 @@ impl Default for Beatd {
             Ok(()) => "Audio running".into(),
             Err(e) => format!("Audio: {e}"),
         };
+        match read_bpm_ranges() {
+            Ok(loaded) => app.bpm_ranges = merge_bpm_ranges(&BUILTIN_BPM_RANGES, loaded),
+            Err(e) => app.status = e,
+        }
+        app.select_bpm_range(app.analyzer.bpm_range_min());
         app
     }
 }
@@ -476,6 +594,25 @@ impl Beatd {
         }
     }
 
+    /// Selects the entry whose range starts at `min`. The Custom entry accepts any `min`,
+    /// and since `merge_bpm_ranges` places it last, a matching fixed range wins.
+    fn select_bpm_range(&mut self, min: f32) {
+        let (index, range) = self
+            .bpm_ranges
+            .iter_mut()
+            .enumerate()
+            .find(|(_, r)| match r {
+                BpmRangePreset::Fixed(f) => f.min == min,
+                BpmRangePreset::Editable(_) => true,
+            })
+            .expect("bpm_ranges always ends with the Custom entry");
+        if let BpmRangePreset::Editable(e) = range {
+            e.min = min;
+        }
+        self.bpm_range = index;
+        self.analyzer.set_bpm_range_min(min);
+    }
+
     fn apply_preset(&mut self, preset: Preset) {
         self.release_notes();
         self.bands = preset.bands;
@@ -500,7 +637,7 @@ impl Beatd {
         self.bpm = 0.0;
         self.last_beat = None;
         self.bpm_beat_age = f32::INFINITY;
-        self.analyzer.set_bpm_range_min(preset.bpm_range_min);
+        self.select_bpm_range(preset.bpm_range_min);
         self.analyzer.set_bpm_enabled(preset.bpm_detect);
         self.show_waveform = preset.show_waveform;
         self.show_spectrum = preset.show_spectrum;
@@ -541,7 +678,7 @@ impl Beatd {
         self.spectrum_address = "/beatd/spectrum".into();
         self.last_beat = None;
         self.bpm_beat_age = f32::INFINITY;
-        self.analyzer.set_bpm_range_min(0.0);
+        self.select_bpm_range(0.0);
         self.analyzer.set_bpm_enabled(true);
         self.status = "Reset settings".into();
     }
@@ -903,32 +1040,41 @@ impl eframe::App for Beatd {
                     ui.add_enabled_ui(self.bpm_detect, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("BPM Range").strong());
-                            let minimum = self.analyzer.bpm_range_min();
-                            let selected_text = if minimum == 0.0 {
-                                "Auto".to_owned()
-                            } else {
-                                format!("{:.0}–{:.0} BPM", minimum, minimum * 2.0)
-                            };
+                            let mut selected = self.bpm_range;
                             egui::ComboBox::from_id_salt("bpm_range")
                                 .width(ui.available_width())
-                                .selected_text(selected_text)
+                                .selected_text(self.bpm_ranges[selected].label())
                                 .show_ui(ui, |ui| {
-                                    for minimum in [0.0, 50.0, 75.0, 100.0, 150.0] {
-                                        let mut selected = self.analyzer.bpm_range_min();
-                                        let label = if minimum == 0.0 {
-                                            "Auto".to_owned()
-                                        } else {
-                                            format!("{:.0}–{:.0} BPM", minimum, minimum * 2.0)
-                                        };
-                                        if ui
-                                            .selectable_value(&mut selected, minimum, label)
-                                            .changed()
-                                        {
-                                            self.analyzer.set_bpm_range_min(minimum);
-                                        }
+                                    for (i, range) in self.bpm_ranges.iter().enumerate() {
+                                        ui.selectable_value(&mut selected, i, range.label());
                                     }
                                 });
+                            if selected != self.bpm_range {
+                                self.bpm_range = selected;
+                                self.analyzer
+                                    .set_bpm_range_min(self.bpm_ranges[selected].min());
+                            }
                         });
+                        if let BpmRangePreset::Editable(range) =
+                            &mut self.bpm_ranges[self.bpm_range]
+                        {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Min").strong());
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut range.min)
+                                            .range(25.0..=300.0)
+                                            .speed(1.0)
+                                            .max_decimals(0)
+                                            .suffix(" BPM"),
+                                    )
+                                    .changed()
+                                {
+                                    range.min = range.min.round();
+                                    self.analyzer.set_bpm_range_min(range.min);
+                                }
+                            });
+                        }
                     });
                 });
                 ui.separator();
@@ -1863,5 +2009,98 @@ mod tests {
             trigger.update(false, true, start + Duration::from_secs(4), 0.0, 0.0, 1.0),
             (true, Some(true))
         );
+    }
+}
+
+#[cfg(test)]
+mod bpm_range_tests {
+    use super::*;
+
+    fn named(name: &str, min: f32) -> FixedBpmRangePreset {
+        FixedBpmRangePreset {
+            name: Some(name.into()),
+            min,
+        }
+    }
+
+    fn fixed(merged: &[BpmRangePreset]) -> Vec<&FixedBpmRangePreset> {
+        merged
+            .iter()
+            .filter_map(|r| match r {
+                BpmRangePreset::Fixed(f) => Some(f),
+                BpmRangePreset::Editable(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn merge_without_user_ranges_keeps_builtin_and_appends_custom() {
+        let merged = merge_bpm_ranges(&BUILTIN_BPM_RANGES, vec![]);
+        let (custom, rest) = merged.split_last().unwrap();
+        assert!(matches!(custom, BpmRangePreset::Editable(_)));
+        assert!(fixed(rest).into_iter().eq(BUILTIN_BPM_RANGES.iter()));
+    }
+
+    #[test]
+    fn merge_sorts_by_min_and_keeps_auto_first() {
+        let merged = merge_bpm_ranges(
+            &BUILTIN_BPM_RANGES,
+            vec![FixedBpmRangePreset::new(128.0), named("DnB", 85.0)],
+        );
+        let mins: Vec<f32> = fixed(&merged).iter().map(|r| r.min).collect();
+        assert_eq!(mins, [0.0, 50.0, 75.0, 85.0, 100.0, 128.0, 150.0]);
+    }
+
+    #[test]
+    fn merge_prefers_user_range_with_same_min() {
+        let merged = merge_bpm_ranges(&BUILTIN_BPM_RANGES, vec![named("Hip Hop", 75.0)]);
+        let ranges: Vec<_> = fixed(&merged)
+            .into_iter()
+            .filter(|r| r.min == 75.0)
+            .collect();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].name.as_deref(), Some("Hip Hop"));
+    }
+
+    #[test]
+    fn merge_drops_invalid_and_duplicate_user_ranges() {
+        let merged = merge_bpm_ranges(
+            &BUILTIN_BPM_RANGES,
+            vec![
+                FixedBpmRangePreset::new(10.0),
+                FixedBpmRangePreset::new(f32::NAN),
+                named("First", 128.0),
+                named("Second", 128.0),
+            ],
+        );
+        assert!(fixed(&merged).iter().all(|r| r.is_valid()));
+        let ranges: Vec<_> = fixed(&merged)
+            .into_iter()
+            .filter(|r| r.min == 128.0)
+            .collect();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].name.as_deref(), Some("First"));
+    }
+
+    #[test]
+    fn label_includes_name_and_range() {
+        let fixed = BpmRangePreset::Fixed;
+        assert_eq!(fixed(FixedBpmRangePreset::new(0.0)).label(), "Auto");
+        assert_eq!(
+            fixed(FixedBpmRangePreset::new(128.0)).label(),
+            "128–256 BPM"
+        );
+        assert_eq!(fixed(named("House", 118.0)).label(), "House (118–236 BPM)");
+        assert_eq!(
+            BpmRangePreset::Editable(EditableBpmRangePreset { min: 132.0 }).label(),
+            "Custom (132–264 BPM)"
+        );
+    }
+
+    #[test]
+    fn bpm_ranges_json_allows_omitting_name() {
+        let ranges: Vec<FixedBpmRangePreset> =
+            serde_json::from_str(r#"[{ "name": "House", "min": 118 }, { "min": 128 }]"#).unwrap();
+        assert!(ranges == vec![named("House", 118.0), FixedBpmRangePreset::new(128.0)]);
     }
 }
